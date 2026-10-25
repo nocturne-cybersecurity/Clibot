@@ -1,0 +1,13 @@
+intents:
+  filesystem:
+    examples: ["lista archivos", "lee /etc/hostname", "calcula hash de ./file"]
+    capability: filesystem
+  system:
+    examples: ["muestra información del sistema", "últimos 100 logs"]
+    capability: system
+  networking:
+    examples: ["muestra interfaces", "diagnostica por qué no hay internet"]
+    capability: networking
+  services:
+    examples: ["estado del servicio nginx"]
+    capability: services

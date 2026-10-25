@@ -1,0 +1,1 @@
+{"risk":{"read_only":{"confirmation_required":false},"low":{"confirmation_required":false},"moderate":{"confirmation_required":false},"high":{"confirmation_required":true},"destructive":{"confirmation_required":true}},"protected_paths":["/","/etc","/usr","/boot","/dev"],"scope_required":["cybersecurity.scan"]}

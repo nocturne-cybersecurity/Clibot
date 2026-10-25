@@ -1,0 +1,15 @@
+# CLIBOT - Requirements
+# Python >= 3.11
+
+# Core & Packaging
+setuptools>=68.0.0
+
+# Development & Testing
+pytest>=8.0.0
+
+# Syntax Highlighting
+pygments>=2.16.0
+
+# Capability Dependencies
+pyyaml>=6.0.0          # Required for YAML processing (capabilities/data_processing.py)
+psycopg2-binary>=2.9.0 # Optional: Required for PostgreSQL capabilities (capabilities/database.py)

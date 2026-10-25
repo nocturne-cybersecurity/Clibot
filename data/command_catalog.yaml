@@ -1,0 +1,6 @@
+commands:
+  ip: {description: Interface and route inspection, capability: networking}
+  systemctl: {description: systemd services, capability: services}
+  journalctl: {description: System journal, capability: system}
+  nmap: {description: Authorized network scanning, capability: cybersecurity}
+  git: {description: Version control, capability: development}

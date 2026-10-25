@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llmah"
+version = "0.2.0"
+description = "Offline-first local Linux assistant for diagnostics and authorized auditing"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+postgres = ["psycopg2-binary>=2.9.0"]
+
+[project.scripts]
+llmah = "llmah:main"
+
+[tool.setuptools]
+py-modules = ["llmah", "main"]
+packages = {find = {include = ["core*", "capabilities*", "discovery*", "execution*", "security*", "intelligence*", "memory*", "interface*"]}}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
