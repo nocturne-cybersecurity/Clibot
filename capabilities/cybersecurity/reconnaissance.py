@@ -1,5 +1,5 @@
 """Scope parsing and DNS reconnaissance primitives."""
-import ipaddress, socket, json
+import ipaddress, socket, json, threading
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
@@ -8,7 +8,21 @@ def normalize_target(value):
     except ValueError:
         if not value or len(value)>253 or any(not x or len(x)>63 for x in value.rstrip('.').split('.')):raise ValueError('Invalid target syntax')
         return value.rstrip('.').encode('idna').decode('ascii').lower()
-def resolve(host):return sorted({x[4][0] for x in socket.getaddrinfo(normalize_target(host),None)})
+def resolve(host, timeout=5):
+    """Resolve a host. libc getaddrinfo has no timeout and can stall for minutes."""
+    normalized = normalize_target(host)
+    box = {}
+    def work():
+        try: box['value'] = socket.getaddrinfo(normalized, None)
+        except Exception as exc: box['error'] = exc
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    thread.join(max(0.3, min(float(timeout), 8)))
+    if thread.is_alive():
+        raise TimeoutError(f'La resolución DNS de {normalized} superó {min(float(timeout), 8):g}s.')
+    if 'error' in box:
+        raise box['error']
+    return sorted({item[4][0] for item in box['value']})
 
 def whois_lookup(target, timeout=12):
     """Look up public registration data through RDAP without a whois binary."""

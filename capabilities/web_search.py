@@ -97,7 +97,7 @@ def _clean(value, limit):
     """Strip terminal control characters from untrusted remote result text."""
     value = ''.join(char for char in value if unicodedata.category(char) not in {'Cc', 'Cf'} or char in '\t\n')
     return ' '.join(value.split())[:limit]
-def search(query, limit=5, timeout=12):
+def search(query, limit=5, timeout=5):
     """Return public search results as title/url/snippet rows, without a GUI.
 
     Tries two lightweight HTML providers sequentially. A provider can return
@@ -116,7 +116,7 @@ def search(query, limit=5, timeout=12):
     for provider, url, parser_type, base_url in providers:
         request = Request(url, headers={'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36'})
         try:
-            with urlopen(request, timeout=max(1, min(int(timeout), 20))) as response:
+            with urlopen(request, timeout=max(1, min(int(timeout), 10))) as response:
                 html = response.read(2_000_001)
             if len(html) > 2_000_000:
                 failures.append(f'{provider}: respuesta mayor de 2 MB')

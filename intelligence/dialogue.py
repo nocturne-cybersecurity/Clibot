@@ -9,7 +9,6 @@ Las tuplas rotan con context.dialogue_turn para no repetir la misma frase.
 """
 import re
 from intelligence.rules import normalize
-from intelligence.llm_integration import LLMIntegration
 
 
 def _choice(options, context):
@@ -1572,40 +1571,6 @@ def respond(text, context=None):
     # 1) Frases exactas (originales + ampliadas)
     if s in EXACT:
         return _pick(EXACT[s], context)
-    
-    # Try LLM for conversational responses if available
-    llm = LLMIntegration()
-    if llm.is_available():
-        try:
-            import signal
-            from contextlib import contextmanager
-            
-            @contextmanager
-            def timeout_context(seconds):
-                def timeout_handler(signum, frame):
-                    raise TimeoutError()
-                if hasattr(signal, 'SIGALRM'):
-                    old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-                    signal.alarm(int(seconds))
-                    try:
-                        yield
-                    finally:
-                        signal.alarm(0)
-                        signal.signal(signal.SIGALRM, old_handler)
-                else:
-                    yield
-            
-            # Use 150ms timeout for LLM
-            prompt = f'''Eres CLIBOT, un asistente técnico de Linux. Responde de forma breve, natural y conversacional en español.
-El usuario dice: "{text}"
-Responde en una sola frase, máximo 30 palabras. Sé amigable pero conciso.'''
-            
-            with timeout_context(0.15):
-                response = llm.generate_response(prompt)
-                if response and len(response.strip()) > 0:
-                    return response.strip()[:500]
-        except (TimeoutError, RuntimeError, Exception):
-            pass  # Fallback to rule-based responses
 
     # Do not intercept complex or multi-word technical questions and instructions with generic chitchat
     words = s.split()

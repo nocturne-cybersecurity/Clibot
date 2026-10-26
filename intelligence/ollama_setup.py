@@ -8,6 +8,8 @@ from pathlib import Path
 from urllib.request import urlopen
 from urllib.error import URLError
 
+from interface.formatter import paint
+
 
 class OllamaSetup:
     """Manages Ollama installation and Phi-3 Mini model setup."""
@@ -59,37 +61,67 @@ class OllamaSetup:
         except (URLError, TimeoutError, json.JSONDecodeError):
             return False
     
+    def _status_line(self, ok, label):
+        mark = paint('●', 'green' if ok else 'yellow')
+        return f"  {mark}  {label}"
+
+    def _offer(self):
+        """Draw the first-run model card. Rules stay instant either way."""
+        installed = self.is_ollama_installed()
+        running = installed and self.is_ollama_running()
+        ready = running and self.is_model_installed()
+        bar = paint('│', 'cyan')
+        print()
+        print(paint('╭─', 'cyan') + ' ' + paint('CLIBOT', 'bold') + paint('  ·  modelo local', 'muted'))
+        print(bar)
+        print(f"{bar}  Las respuestas normales salen al instante.")
+        print(f"{bar}  Phi-3 Mini es opcional y solo se consulta")
+        print(f"{bar}  cuando una frase no coincide con una regla.")
+        print(bar)
+        print(f"{bar}  {paint('Phi-3 Mini', 'bold')}{paint('   3.8B · ~2.3 GB · ~1.5 GB RAM', 'muted')}")
+        print(f"{bar}  {paint('En CPU una frase del modelo tarda segundos.', 'muted')}")
+        print(f"{bar}  {paint('Si tarda más de 4 s, CLIBOT sigue sin esperarlo.', 'muted')}")
+        print(bar)
+        print(bar + self._status_line(installed, 'Ollama instalado' if installed else 'Ollama no está instalado'))
+        print(bar + self._status_line(running, 'Servicio activo' if running else 'Servicio detenido'))
+        print(bar + self._status_line(ready, 'phi3:mini listo' if ready else 'phi3:mini todavía no está'))
+        print(paint('╰─', 'cyan'))
+        print()
+        print('  ' + paint('s', 'green') + paint('      instalar Phi-3 Mini', 'muted'))
+        print('  ' + paint('enter', 'green') + paint('  seguir sin modelo', 'muted'))
+        print()
+
     def install_ollama(self):
         """Install Ollama using the official install script."""
-        print("📦 Instalando Ollama...")
+        print(paint('  Instalando Ollama…', 'cyan'))
         
         try:
             # Detect OS
             if sys.platform == 'linux':
                 # Linux install script
                 cmd = ['curl', '-fsSL', 'https://ollama.com/install.sh', '|', 'sh']
-                print("   Ejecutando: curl -fsSL https://ollama.com/install.sh | sh")
+                print(paint('  curl -fsSL https://ollama.com/install.sh | sh', 'muted'))
                 subprocess.run('curl -fsSL https://ollama.com/install.sh | sh', shell=True, check=True)
             elif sys.platform == 'darwin':
                 # macOS install
                 cmd = ['brew', 'install', 'ollama']
-                print(f"   Ejecutando: {' '.join(cmd)}")
+                print(paint('  ' + ' '.join(cmd), 'muted'))
                 subprocess.run(cmd, check=True)
             else:
                 raise RuntimeError(f"Sistema operativo no soportado: {sys.platform}")
             
-            print("✅ Ollama instalado correctamente")
+            print(paint('  Ollama instalado.', 'green'))
             return True
         except subprocess.CalledProcessError as e:
-            print(f"❌ Error instalando Ollama: {e}")
+            print(paint(f'  No pude instalar Ollama: {e}', 'red'))
             return False
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(paint(f'  No pude instalar Ollama: {e}', 'red'))
             return False
     
     def start_ollama(self):
         """Start Ollama daemon."""
-        print("🚀 Iniciando Ollama...")
+        print(paint('  Arrancando Ollama…', 'cyan'))
         try:
             # Start in background
             subprocess.Popen(['ollama', 'serve'], 
@@ -102,20 +134,20 @@ class OllamaSetup:
             for i in range(10):
                 time.sleep(1)
                 if self.is_ollama_running():
-                    print("✅ Ollama iniciado correctamente")
+                    print(paint('  Ollama está activo.', 'green'))
                     return True
             
-            print("⚠️  Ollama tardó en iniciar, pero debería estar corriendo")
+            print(paint('  Ollama tardó en responder. Sigo de todos modos.', 'yellow'))
             return True
         except Exception as e:
-            print(f"❌ Error iniciando Ollama: {e}")
+            print(paint(f'  No pude arrancar Ollama: {e}', 'red'))
             return False
     
     def pull_model(self, model=None):
         """Pull a model from Ollama."""
         model = model or self.RECOMMENDED_MODEL
-        print(f"📥 Descargando modelo {model}...")
-        print(f"   Esto puede tomar unos minutos (el modelo pesa ~2.3GB)")
+        print(paint(f'  Descargando {model}…', 'cyan'))
+        print(paint('  Unos minutos. El archivo pesa ~2.3 GB.', 'muted'))
         
         try:
             process = subprocess.Popen(
@@ -132,13 +164,13 @@ class OllamaSetup:
             process.wait()
             
             if process.returncode == 0:
-                print(f"✅ Modelo {model} instalado correctamente")
+                print(paint(f'  {model} instalado.', 'green'))
                 return True
             else:
-                print(f"❌ Error descargando modelo: código {process.returncode}")
+                print(paint(f'  La descarga terminó con código {process.returncode}.', 'red'))
                 return False
         except Exception as e:
-            print(f"❌ Error: {e}")
+            print(paint(f'  No pude descargar el modelo: {e}', 'red'))
             return False
     
     def setup_complete(self):
@@ -175,55 +207,44 @@ class OllamaSetup:
             config['installed'] = False
             self.save_config(config)
         
-        print("\n" + "="*60)
-        print("🤖 CONFIGURACIÓN DE MODELO DE LENGUAJE LOCAL")
-        print("="*60)
-        print("\nCLIBOT puede usar un modelo de lenguaje local (Phi-3 Mini)")
-        print("para respuestas más naturales y fluidas.")
-        print("\nDetalles:")
-        print("  • Modelo: Phi-3 Mini (3.8B parámetros)")
-        print("  • Tamaño: ~2.3GB en disco")
-        print("  • RAM: ~1.5GB")
-        print("  • Velocidad: 30-80ms por respuesta")
-        print("  • Uso: Solo para chat casual, NO para comandos del sistema")
-        print("\nEs completamente opcional. CLIBOT funcionará perfectamente sin él.")
-        print("="*60 + "\n")
+        self._offer()
         
         while True:
-            response = input("¿Quieres instalar Phi-3 Mini ahora? [s/N]: ").strip().lower()
+            response = input(paint('  instalar? ', 'cyan') + paint('[s/N] ', 'muted')).strip().lower()
             
             if response in ('n', 'no', '', 'exit'):
-                print("\n👍 Entendido. CLIBOT funcionará con respuestas predefinidas.")
-                print("   Puedes instalarlo más tarde ejecutando:")
-                print("   ollama pull phi3:mini")
+                print()
+                print(paint('  Listo.', 'green') + ' CLIBOT responde al instante, sin modelo.')
+                print(paint('  Más tarde:', 'muted') + ' ollama pull phi3:mini')
+                print()
                 self.mark_asked()
                 return False
             
             if response in ('s', 'si', 'yes', 'y'):
                 break
             
-            print("Por favor responde 's' para sí o 'n' para no.")
+            print(paint('  s para instalar, enter para seguir.', 'muted'))
         
         self.mark_asked()
         
         # Check if Ollama is installed
         if not self.is_ollama_installed():
-            print("\n📦 Ollama no está instalado.")
-            response = input("¿Quieres instalar Ollama ahora? [s/N]: ").strip().lower()
+            print()
+            print(paint('  Falta Ollama, el programa que ejecuta el modelo.', 'yellow'))
+            response = input(paint('  instalar Ollama? ', 'cyan') + paint('[s/N] ', 'muted')).strip().lower()
             
             if response in ('s', 'si', 'yes', 'y'):
                 if not self.install_ollama():
-                    print("\n❌ No se pudo instalar Ollama.")
+                    print(paint('  Sigo sin modelo. Las reglas locales siguen activas.', 'muted'))
                     return False
             else:
-                print("\n❌ Necesitas Ollama para usar el modelo.")
-                print("   Instálalo manualmente desde: https://ollama.com")
+                print(paint('  Cuando quieras: https://ollama.com', 'muted'))
                 return False
         
         # Check if Ollama is running
         if not self.is_ollama_running():
             if not self.start_ollama():
-                print("\n❌ No se pudo iniciar Ollama.")
+                print(paint('  No pude arrancar Ollama. Sigo con reglas locales.', 'muted'))
                 return False
         
         # Pull the model
@@ -231,8 +252,11 @@ class OllamaSetup:
             return False
         
         self.mark_installed()
-        print("\n✅ ¡Configuración completada!")
-        print("   CLIBOT ahora usará Phi-3 Mini para respuestas más naturales.")
+        print()
+        print(paint('  Phi-3 Mini quedó listo.', 'green'))
+        print(paint('  El chat de siempre sigue siendo inmediato.', 'muted'))
+        print(paint('  El modelo solo entra si una frase no tiene regla.', 'muted'))
+        print()
         return True
 
 

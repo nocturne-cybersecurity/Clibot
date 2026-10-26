@@ -15,12 +15,14 @@ from intelligence.llm_integration import LLMIntegration
 
 class Assistant:
     def __init__(self,confirm=input):
+        import os
         self.config=load_config(); self.registry=registry; self.parser=Parser(); self.validator=Validator(registry); self.context=Context(); self.auto_open_terminal=False; self._input_confirm=confirm
         self.executor=Executor(registry,self._confirm,self.config['settings'].get('execution',{}).get('default_yes_operations',()),
                                self.config['policies'].get('risk',{}))
-        self.llm = LLMIntegration()
+        # Only enable LLM if explicitly requested via environment variable CLIBOT_USE_LLM=true
+        use_llm = os.environ.get('CLIBOT_USE_LLM', 'false').lower() == 'true'
+        self.llm = LLMIntegration() if use_llm else None
         self.audit_logger = AuditLogger()
-        self.llm_timeout = 0.15  # 150ms timeout for LLM responses
     def _confirm(self,prompt):
         if self.auto_open_terminal and prompt.startswith('Confirm abrir una terminal (moderate)?'):return 'yes'
         return self._input_confirm(prompt)
@@ -211,14 +213,8 @@ class Assistant:
                 return {'request':request,'message':f'La hora local es {value["time"]} ({value["timezone"]}).'}
         conversational=dialogue_response(request,self.context)
         if conversational:
-            short_greeting=bool(re.fullmatch(r'(?:hola|hi|hey|buenos dias|buenas tardes|buenas noches|gracias|muchas gracias|thank you|perfecto|claro)',phrase))
-            if self.llm.is_available() and not short_greeting:
-                try:
-                    model_result=self._interpret_with_model(request)
-                    if model_result is not None:
-                        return model_result
-                except Exception:
-                    pass
+            # A rule already answered. Asking Phi-3 to rewrite it sent the whole
+            # capability catalog and blocked the prompt for minutes.
             return {'request':request,'message':conversational}
         if 'no me deja moverme en el texto' in phrase or 'moverme en el texto' in phrase:
             return {'request':request,'message':'La entrada usa edición de línea del terminal: usa ← y → para mover el cursor, ↑ y ↓ para recorrer el historial y Ctrl+A/Ctrl+E para ir al inicio/final.'}
@@ -238,23 +234,24 @@ class Assistant:
             return self._reformat_last(request)
         auto_research=self.config['settings'].get('research',{}).get('automatic_for_general_questions',True)
         if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and self._is_open_ended_request(request):
-            if self.llm.is_available():
+            if self.llm and self.llm.is_available():
                 try:
                     message=self.llm.generate_response(
-                        'Responde a la petición en español, con naturalidad y en menos de 120 palabras. '
-                        'Puedes crear texto original. No afirmes que tienes sentimientos u opiniones personales; '
-                        'si te piden una opinión, ofrece una valoración razonada. No ejecutes acciones. '
-                        'PETICIÓN: '+request[:3000],
+                        'Responde en español, en menos de 70 palabras. '
+                        'Puedes crear texto original. No afirmes que tienes sentimientos. '
+                        'No ejecutes acciones. PETICIÓN: '+request[:700],
                     )
                     if message.strip():return {'request':request,'message':message.strip()[:1500],'reasoning':'local_model'}
                 except Exception:
                     pass
             return {'request':request,'message':'Para inventar o desarrollar una respuesta abierta necesito un modelo de lenguaje activo. No voy a convertir esa petición creativa en una búsqueda web.'}
-        if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and self.llm.is_available():
+        if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and self.llm and self.llm.is_available():
             try:
                 model_result=self._interpret_with_model(request)
                 if model_result is not None:
                     return model_result
+            except RuntimeError:
+                pass
             except Exception as exc:
                 return {'request':request,'error':str(exc),'error_category':'model_error'}
         if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and auto_research and self._is_general_question(request):
@@ -336,23 +333,31 @@ class Assistant:
         return any(re.search(pattern,normalized) for pattern in patterns)
 
     def _interpret_with_model(self,request):
-        import signal
-        from contextlib import contextmanager
+        import threading
+        import queue
         
-        @contextmanager
-        def timeout_context(seconds):
-            def timeout_handler(signum, frame):
-                raise TimeoutError()
-            if hasattr(signal, 'SIGALRM'):
-                old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-                signal.alarm(int(seconds))
+        def run_with_timeout(func, timeout_seconds):
+            result_queue = queue.Queue()
+            exception_queue = queue.Queue()
+            
+            def worker():
                 try:
-                    yield
-                finally:
-                    signal.alarm(0)
-                    signal.signal(signal.SIGALRM, old_handler)
-            else:
-                yield
+                    result = func()
+                    result_queue.put(result)
+                except Exception as e:
+                    exception_queue.put(e)
+            
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
+            thread.join(timeout=timeout_seconds)
+            
+            if thread.is_alive():
+                return None  # Timeout - fallback to rule-based
+            if not exception_queue.empty():
+                raise exception_queue.get()
+            if not result_queue.empty():
+                return result_queue.get()
+            return None
         
         catalog=[]
         for capability in self.registry.list():
@@ -381,10 +386,10 @@ class Assistant:
                 'question':self.context.pending.get('question',''),
                 'user_followup':request,
             }
-        try:
-            with timeout_context(self.llm_timeout):
-                choice=self.llm.interpret_request(request,catalog,summary)
-        except TimeoutError:
+        if not self.llm:
+            return None
+        choice = run_with_timeout(lambda: self.llm.interpret_request(request,catalog,summary), self.llm_timeout)
+        if choice is None:
             return None  # Fallback to rule-based parsing
         kind=choice['kind']
         if kind=='answer':
