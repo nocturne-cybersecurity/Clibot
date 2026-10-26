@@ -4,9 +4,10 @@
 
 Combina reglas locales deterministas de ejecución segura con la posibilidad de conectar modelos locales (como **Ollama**) para la interpretación de consultas avanzadas.
 
+![clibot](src/clibot.png)
 ---
 
-## 📋 Requisitos Previos
+##  Requisitos Previos
 
 - **Sistema Operativo:** Linux
 - **Python:** 3.11 o superior
@@ -14,14 +15,14 @@ Combina reglas locales deterministas de ejecución segura con la posibilidad de 
 
 ---
 
-## 🚀 Guía Paso a Paso: Descarga e Instalación
+##  Guía Paso a Paso: Descarga e Instalación
 
 ### Paso 1: Clonar / Descargar el Repositorio
 
 Abre tu terminal y clona el repositorio en tu equipo:
 
 ```bash
-git clone https://github.com/tu-usuario/CLIBOT.git
+git clone https://github.com/nocturne-cybersecurity/Clibot.git
 cd CLIBOT
 ```
 
@@ -102,7 +103,7 @@ source ~/.zshrc
 
 ---
 
-## 🎯 Uso de `clibot`
+##  Uso de `clibot`
 
 Una vez configurado, puedes lanzar el asistente desde cualquier directorio:
 
@@ -125,7 +126,7 @@ clibot --command "calcula raiz cuadrada de 144"
 
 ---
 
-## 📚 Ejemplos de Uso
+##  Ejemplos de Uso
 
 ### Sistema
 ```bash
@@ -185,7 +186,7 @@ clibot --command "muestra la memoria RAM"
 
 ---
 
-## 💡 Comandos Internos de la Terminal
+##  Comandos Internos de la Terminal
 
 Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 - `/help` o `/capabilities`: Muestra las capacidades y operaciones disponibles.
@@ -201,7 +202,7 @@ Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 
 ---
 
-## 🤖 Uso Opcional con Modelo Local (Ollama)
+##  Uso Opcional con Modelo Local (Ollama)
 
 CLIBOT funciona 100% offline sin necesidad de un modelo externo. Sin embargo, si tienes **Ollama** instalado y ejecutándose en tu sistema, puedes activar el razonamiento con IA:
 
@@ -213,7 +214,7 @@ clibot
 
 ---
 
-## 🧪 Pruebas y Desarrollo
+##  Pruebas y Desarrollo
 
 Para verificar que todos los módulos y pruebas del sistema funcionan correctamente:
 
