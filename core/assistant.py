@@ -22,6 +22,7 @@ class Assistant:
         # Only enable LLM if explicitly requested via environment variable CLIBOT_USE_LLM=true
         use_llm = os.environ.get('CLIBOT_USE_LLM', 'false').lower() == 'true'
         self.llm = LLMIntegration() if use_llm else None
+        self.llm_timeout = 0.15  # 150ms timeout for LLM responses
         self.audit_logger = AuditLogger()
     def _confirm(self,prompt):
         if self.auto_open_terminal and prompt.startswith('Confirm abrir una terminal (moderate)?'):return 'yes'
