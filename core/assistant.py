@@ -12,6 +12,7 @@ from core.error_handler import handle_error
 from core.audit_logger import AuditLogger
 from intelligence.dialogue import respond as dialogue_response
 from intelligence.llm_integration import LLMIntegration
+from core.agent_cycle import AgentCycle
 
 class Assistant:
     def __init__(self,confirm=input):
@@ -24,6 +25,8 @@ class Assistant:
         self.llm = LLMIntegration() if use_llm else None
         self.llm_timeout = 0.15  # 150ms timeout for LLM responses
         self.audit_logger = AuditLogger()
+        # Initialize agent cycle for enhanced reasoning
+        self.agent_cycle = AgentCycle(llm=self.llm) if self.llm else None
     def _confirm(self,prompt):
         if self.auto_open_terminal and prompt.startswith('Confirm abrir una terminal (moderate)?'):return 'yes'
         return self._input_confirm(prompt)
@@ -45,6 +48,42 @@ class Assistant:
 
     def _handle(self,request):
         phrase=normalize(request).strip(' .!?¿¡')
+        
+        # Try agent cycle for GitHub/Stack Overflow queries when LLM is available
+        if self.agent_cycle and re.search(r'\b(?:github|stack\s+overflow|stackoverflow)\b', phrase, re.I):
+            try:
+                from core.agent_types import ToolCall
+                def tool_executor(tool_calls):
+                    results = []
+                    for tc in tool_calls:
+                        try:
+                            cap = self.registry.get(tc.capability)
+                            result_data = cap.operations[tc.tool_name](**tc.arguments)
+                            from core.contracts import Result, Status
+                            result = Result(
+                                operation_id=tc.id,
+                                success=True,
+                                data={'value': result_data},
+                                status=Status.SUCCEEDED
+                            )
+                            results.append(result)
+                        except Exception as e:
+                            from core.contracts import Result, Status
+                            results.append(Result(
+                                operation_id=tc.id,
+                                success=False,
+                                error=str(e),
+                                status=Status.FAILED
+                            ))
+                    return results
+                
+                agent_response = self.agent_cycle.run(request, self.context, tool_executor)
+                if agent_response.message and not agent_response.error:
+                    return {'request':request, 'message':agent_response.message, 'reasoning':agent_response.reasoning_method}
+            except Exception:
+                # Fall back to regular parser on agent cycle error
+                pass
+        
         if re.search(r'\bno me preguntes\b.*\b(terminal|terminales|consola)\b',phrase):
             self.auto_open_terminal=True
             return {'request':request,'message':'Entendido. En esta sesión abriré terminales vacías sin pedir confirmación. Seguiré confirmando cualquier comando que ejecutes dentro.'}

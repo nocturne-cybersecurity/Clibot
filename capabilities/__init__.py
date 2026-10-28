@@ -1,6 +1,6 @@
 """Registration of implemented capabilities. Importing registers metadata only."""
 from discovery.capability_registry import Capability, registry
-from . import filesystem as fs, system, networking, services, development, browser, processes, translation, web_search, package_manager, monitoring, automation
+from . import filesystem as fs, system, networking, services, development, browser, processes, translation, web_search, package_manager, monitoring, automation, github, stack_exchange
 from .cybersecurity import scanners, reconnaissance, reporting
 
 def _add(name, description, operations, schemas, risks=None):
@@ -128,6 +128,17 @@ _add('automation','Automation for scripts, cron jobs, and systemd timers',{
  'enable_systemd_timer':automation.enable_systemd_timer,'disable_systemd_timer':automation.disable_systemd_timer},{
  'create_script':{'required':['path','content'],'properties':{'path':'path','content':'string','executable':'boolean'}},'list_cron_jobs':{'properties':{'user':'string'}},'add_cron_job':{'required':['cron_expression','command'],'properties':{'cron_expression':'string','command':'string','user':'string'}},'remove_cron_job':{'required':['cron_expression','command'],'properties':{'cron_expression':'string','command':'string','user':'string'}},'list_systemd_timers':{'properties':{}},'create_systemd_timer':{'required':['name','command','schedule'],'properties':{'name':'string','command':'string','schedule':'string','description':'string'}},'enable_systemd_timer':{'required':['name'],'properties':{'name':'string'}},'disable_systemd_timer':{'required':['name'],'properties':{'name':'string'}}},
  {'create_script':'moderate','add_cron_job':'high','remove_cron_job':'high','create_systemd_timer':'moderate','enable_systemd_timer':'moderate','disable_systemd_timer':'moderate'})
+_add('github','GitHub API integration for repositories, issues, and code',{
+ 'search_repositories':github.search_repositories,'search_issues':github.search_issues,'get_repository':github.get_repository,
+ 'get_readme':github.get_readme,'get_file_content':github.get_file_content,'get_rate_limit_status':github.get_rate_limit_status},{
+ 'search_repositories':{'required':['query'],'properties':{'query':'string','language':'string','per_page':'integer'}},'search_issues':{'required':['query'],'properties':{'query':'string','per_page':'integer'}},
+ 'get_repository':{'required':['owner','repo'],'properties':{'owner':'string','repo':'string'}},'get_readme':{'required':['owner','repo'],'properties':{'owner':'string','repo':'string'}},
+ 'get_file_content':{'required':['owner','repo','path'],'properties':{'owner':'string','repo':'string','path':'string','ref':'string'}},'get_rate_limit_status':{'properties':{}}},{'search_repositories':'read_only','search_issues':'read_only','get_repository':'read_only','get_readme':'read_only','get_file_content':'read_only','get_rate_limit_status':'read_only'})
+_add('stack_exchange','Stack Exchange API integration for Stack Overflow and other sites',{
+ 'search_questions':stack_exchange.search_questions,'get_question':stack_exchange.get_question,'get_answers':stack_exchange.get_answers,
+ 'search_similar':stack_exchange.search_similar,'get_rate_limit_status':stack_exchange.get_rate_limit_status},{
+ 'search_questions':{'required':['query'],'properties':{'query':'string','site':'string','tags':'array','pagesize':'integer'}},'get_question':{'required':['question_id'],'properties':{'question_id':'integer','site':'string'}},
+ 'get_answers':{'required':['question_id'],'properties':{'question_id':'integer','site':'string'}},'search_similar':{'required':['title'],'properties':{'title':'string','site':'string','pagesize':'integer'}},'get_rate_limit_status':{'properties':{}}},{'search_questions':'read_only','get_question':'read_only','get_answers':'read_only','search_similar':'read_only','get_rate_limit_status':'read_only'})
 
 # Optional capabilities can be added as focused modules under capabilities/plugins/.
 from .plugins import load as _load_plugins

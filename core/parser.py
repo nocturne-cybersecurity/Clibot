@@ -706,6 +706,99 @@ def build_npm_install(s, text, ctx):
                            f'instalar {", ".join(packages)} con npm'))
 
 
+# ---- GitHub and Stack Exchange integration ------------------------------------
+def build_github_search(s, text, ctx):
+    """Build GitHub repository search operation."""
+    m = re.search(r'\b(?:busca\w*|busca|buscar|search|encuentra)\s+(?:en\s+)?github\s+(.+?)(?:\s+(?:en\s+)?(\w+))?\s*$', s, re.I)
+    if not m:
+        return _ask(text, '¿Qué quieres buscar en GitHub?')
+    
+    query = m.group(1).strip()
+    language = m.group(2).strip() if m.group(2) else None
+    
+    args = {'query': query, 'per_page': 10}
+    if language:
+        args['language'] = language
+    
+    lang_desc = f" en {language}" if language else ""
+    return _plan(text, _op('github', 'search_repositories', args, Risk.READ_ONLY,
+                           f'buscar repositorios en GitHub{lang_desc}: {query}'))
+
+
+def build_github_search_with_lang(s, text, ctx):
+    """Build GitHub search with explicit language."""
+    m = re.search(r'\b(?:busca\w*|busca|buscar|search)\s+(.+?)\s+(?:en\s+)?github\s+(?:en\s+)?(\w+)\s*$', s, re.I)
+    if not m:
+        return _ask(text, '¿Qué quieres buscar en GitHub y en qué lenguaje?')
+    
+    query = m.group(1).strip()
+    language = m.group(2).strip()
+    
+    return _plan(text, _op('github', 'search_repositories', {'query': query, 'language': language, 'per_page': 10},
+                           Risk.READ_ONLY, f'buscar repositorios {language} en GitHub: {query}'))
+
+
+def build_stackoverflow_search(s, text, ctx):
+    """Build Stack Overflow search for errors."""
+    # Extract error from context if available
+    query = ""
+    if ctx and ctx.last_error:
+        query = ctx.last_error[:200]
+    else:
+        # Try to extract from the request itself
+        m = re.search(r'(?:error|exception|fail)\s*[:\s]*(.+?)(?:\s+(?:en\s+)?(?:stack\s+overflow|stackoverflow))?$', s, re.I)
+        if m:
+            query = m.group(1).strip()
+    
+    if not query:
+        return _ask(text, '¿Qué error quieres buscar en Stack Overflow?')
+    
+    return _plan(text, _op('stack_exchange', 'search_questions', {'query': query, 'site': 'stackoverflow', 'pagesize': 10},
+                           Risk.READ_ONLY, f'buscar solución en Stack Overflow: {query}'))
+
+
+def build_stackoverflow_search_with_query(s, text, ctx):
+    """Build Stack Overflow search with explicit query."""
+    m = re.search(r'\b(?:busca\w*|busca|buscar|search)\s+(.+?)\s+(?:en\s+)?(?:stack\s+overflow|stackoverflow)\b', s, re.I)
+    if not m:
+        return _ask(text, '¿Qué quieres buscar en Stack Overflow?')
+    
+    query = m.group(1).strip()
+    return _plan(text, _op('stack_exchange', 'search_questions', {'query': query, 'site': 'stackoverflow', 'pagesize': 10},
+                           Risk.READ_ONLY, f'buscar en Stack Overflow: {query}'))
+
+
+def build_calculator(s, text, ctx):
+    """Build calculator operation from natural language math expression."""
+    # Remove question marks and normalize
+    expr = re.sub(r'[¿?¡!]', '', text).strip()
+    # Remove common prefixes
+    expr = re.sub(r'^(?:cuanto es|cuanto es la|calcula|calcula el|calcula la|cuanto es|cuánto es|cuánto es la|cuál es|cual es|evalua|evalúa)\s*', '', expr, flags=re.I)
+    expr = re.sub(r'^(?:la|el|un|una)\s+(?:raiz cuadrada de|raíz cuadrada de)\s*', 'raiz cuadrada de ', expr, flags=re.I)
+    
+    if not expr or len(expr) < 3:
+        return _ask(text, '¿Qué quieres calcular?')
+    
+    return _plan(text, _op('calculator', 'evaluate', {'expression': expr}, Risk.READ_ONLY,
+                           f'calcular: {expr}'))
+
+
+def build_context_entity(s, text, ctx):
+    """Build context entity storage from statements like 'Mi carpeta se llama X'."""
+    m = re.search(r'\b(?:mi|el|la)\s+(\w+(?:\s+\w+)?)\s+(?:se llama|es|está|está en)\s+(.+?)[.?!]*$', s, re.I)
+    if not m:
+        return None
+    
+    entity_type = m.group(1).strip()
+    entity_value = m.group(2).strip()
+    
+    if ctx and hasattr(ctx, 'set_entity'):
+        ctx.set_entity(entity_type, entity_value)
+        return {'request': text, 'message': f'Entendido, {entity_type} es {entity_value}', 'clarification': None}
+    
+    return None
+
+
 def build_move(s, text, ctx):
     quoted = re.findall(r'["\']([^"\']+)["\']', text)
     match = re.search(r'(?i)\b(?:mueve|mover|move|renombra|renombrar|rename)\s+(.+?)\s+(?:a|hacia|to)\s+(.+?)\s*[?.!]*$', text)
@@ -1276,6 +1369,23 @@ GUARDS = [
 
 # Reglas que deben ir antes de «service_change» y «open» porque comparten verbos (inicia, abre, apaga, reinicia…).
 EARLY_RULES = [
+    # --- GitHub integration (before site_search to avoid web search fallback)
+    _B('github_search', r'\b(?:busca\w*|busca|buscar|search|encuentra)\s+(?:en\s+)?github\s+(.+?)(?:\s+(?:en\s+)?(?:python|javascript|go|rust|java|typescript|cpp|c\+\+|ruby|php|swift|kotlin))?\s*$', build_github_search,
+       [('busca en github proyectos python', 'github.search_repositories'), ('busca en github analisis de logs', 'github.search_repositories')]),
+    _B('github_search_with_lang', r'\b(?:busca\w*|busca|buscar|search)\s+(.+?)\s+(?:en\s+)?github\s+(?:en\s+)?(\w+)\s*$', build_github_search_with_lang,
+       [('busca analisis de logs en github python', 'github.search_repositories')]),
+    _R('github_issues', r'\b(?:issues?|problemas|pull requests?)\s+(?:de|en)\s+github\b', 'github', 'search_issues', ['busca issues en github']),
+    # --- Stack Exchange integration (before site_search to avoid web search fallback)
+    _B('stackoverflow_search', r'\b(?:busca\w*|busca|buscar|search|encuentra)\s+(?:solucion\s+(?:para|de)?|respuesta\s+(?:para|de)?)?(?:este\s+)?error\s+(?:en\s+)?(?:stack\s+overflow|stackoverflow)\b', build_stackoverflow_search,
+       [('busca solucion para este error en stack overflow', 'stack_exchange.search_questions'), ('busca en stack overflow connection refused', 'stack_exchange.search_questions')]),
+    _B('stackoverflow_search_query', r'\b(?:busca\w*|busca|buscar|search)\s+(.+?)\s+(?:en\s+)?(?:stack\s+overflow|stackoverflow)\b', build_stackoverflow_search_with_query,
+       [('busca connection refused en stack overflow', 'stack_exchange.search_questions')]),
+    # --- calculator (before other rules to catch math expressions)
+    _B('calculator', r'\b(?:cuanto es|cuanto es la|calcula|calcula el|calcula la|cuanto es|cuánto es|cuánto es la|cuál es|cual es|evalua|evalúa)\b.*\b(?:\d+|raiz|raíz|sqrt|mas|menos|por|entre|dividido|sumar|restar|multiplicar|dividir)\b', build_calculator,
+       [('cuanto es 10 mas 5', 'calculator.evaluate'), ('calcula la raiz cuadrada de 81', 'calculator.evaluate'), ('cuanto es 1500 / 60', 'calculator.evaluate')]),
+    # --- context entity storage
+    _B('context_entity', r'\b(?:mi|el|la)\s+\w+(?:\s+\w+)?\s+(?:se llama|es|está|está en)\s+.+', build_context_entity,
+       [('mi carpeta se llama Fenrir', 'context.set_entity')]),
     _B('server_list', r'\bservidores?\s+(?:activos?|levantados?|corriendo|abiertos?)\b|\b(?:que|cuales|lista\w*|muestra\w*|ver)\b.*\bservidores\b.*\b(?:corriendo|activos|levantados|tengo|hay)\b',
        build_server_list, [('que servidores tengo corriendo', 'networking.list_local_servers'), ('lista los servidores activos', 'networking.list_local_servers')]),
     _B('server_stop', _all(_rx(_STOP_VERBS), _rx(_SERVER_WORD)), build_server_stop,
@@ -1395,8 +1505,14 @@ NEW_RULES = [
     # --- servicios (listas)
     _R('services_failed', r'\b(?:servicios fallidos|unidades fallidas|servicios caidos|servicios que fallaron|que servicios fallaron|failed services)\b', 'services', 'list_failed', ['servicios fallidos']),
     _R('services_enabled', r'\b(?:servicios habilitados|servicios (?:al|en el) arranque|enabled services|que arranca con el sistema)\b', 'services', 'list_enabled', ['servicios habilitados']),
-    _R('services_running', r'\b(?:servicios (?:activos|corriendo|en ejecucion|funcionando)|lista de servicios|que servicios (?:hay|estan)|list services)\b', 'services', 'list_running', ['servicios activos', 'lista de servicios']),
+    _R('services_running', r'\b(?:servicios (?:activos|corriendo|en ejecucion|funcionando)|lista de servicios|que servicios (?:hay|estan)|list services)\b', 'services', 'list', ['servicios activos', 'lista de servicios']),
     _R('services_timers', r'\b(?:temporizadores|systemd timers|timers del sistema|tareas programadas del sistema|list timers)\b', 'services', 'list_timers', ['timers del sistema']),
+    # --- git operations
+    _R('git_status', r'\b(?:estado de git|muestra el estado de git|git status|estado del repositorio)\b', 'development', 'git_status', ['muestra el estado de git', 'git status']),
+    _R('git_branch', r'\b(?:en que rama estoy|que rama es esta|git branch|rama actual|rama de git)\b', 'development', 'git_branch', ['en que rama estoy', 'git branch']),
+    _R('git_log', r'\b(?:ultimos commits|muestra los ultimos commits|git log|historial de commits|commits recientes)\b', 'development', 'git_log', ['muestra los ultimos commits', 'git log']),
+    # --- listening ports
+    _R('listening_ports', r'\b(?:que puertos estan escuchando|puertos en escucha|listening ports|puertos abiertos)\b', 'networking', 'listening_ports', ['que puertos estan escuchando', 'listening ports']),
     _R('services_boot_blame', r'\b(?:que (?:tarda|demora) (?:mas )?en arrancar|arranque lento|tiempo de arranque|boot blame|analiza el arranque)\b', 'services', 'boot_blame', ['que tarda mas en arrancar']),
     _B('services_find', r'\b(?:existe el servicio|hay un servicio|busca\w* (?:el )?servicio|servicios que (?:contengan|tengan))\b', build_find_service, [('busca el servicio docker', 'services.find_service')]),
     # --- sesión y energía

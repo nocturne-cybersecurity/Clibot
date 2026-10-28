@@ -212,6 +212,29 @@ export CLIBOT_LLM_MODEL='llama3.2' # Reemplaza por el nombre de tu modelo en 'ol
 clibot
 ```
 
+### Uso con OpenAI u otros proveedores compatibles
+
+```bash
+export CLIBOT_LLM_PROVIDER=openai
+export CLIBOT_LLM_MODEL=gpt-4o-mini
+export LLM_API_KEY=your_api_key_here
+clibot
+```
+
+### Integraciones con APIs externas
+
+CLIBOT incluye integraciones opcionales con GitHub y Stack Exchange:
+
+```bash
+# GitHub (opcional, para mayor límite de tasa)
+export GITHUB_TOKEN=your_github_token
+
+# Stack Exchange (opcional, para mayor límite de tasa)
+export STACK_EXCHANGE_KEY=your_stack_exchange_key
+```
+
+Sin estas variables, las integraciones funcionan con límites estándar para acceso público.
+
 ---
 
 ##  Pruebas y Desarrollo
