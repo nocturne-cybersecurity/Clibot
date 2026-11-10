@@ -17,22 +17,52 @@ Combina reglas locales deterministas de ejecución segura con la posibilidad de 
 
 ##  Guía Paso a Paso: Descarga e Instalación
 
-### Paso 1: Clonar / Descargar el Repositorio
+### Método Rápido (Recomendado)
 
-Abre tu terminal y clona el repositorio en tu equipo:
+Usa el script de instalación automatizada que configura todo automáticamente:
+
+```bash
+# 1. Clonar el repositorio
+git clone https://github.com/nocturne-cybersecurity/Clibot.git
+cd CLIBOT
+
+# 2. Ejecutar el script de instalación
+python3 instalacion.py
+```
+
+El script `instalacion.py` realizará automáticamente:
+- ✓ Verificar versión de Python (requiere 3.11+)
+- ✓ Crear entorno virtual (.venv)
+- ✓ Instalar todas las dependencias
+- ✓ Instalar CLIBOT en modo editable
+- ✓ Preguntar si deseas instalar soporte de voz (Vosk)
+- ✓ Configurar el comando global `clibot` en `~/.local/bin`
+- ✓ Actualizar tu PATH si es necesario
+
+Después de la instalación, recarga tu configuración de shell:
+```bash
+source ~/.bashrc  # o source ~/.zshrc
+```
+
+Luego simplemente ejecuta:
+```bash
+clibot
+```
+
+---
+
+### Método Manual
+
+Si prefieres configurar todo manualmente:
+
+#### Paso 1: Clonar el Repositorio
 
 ```bash
 git clone https://github.com/nocturne-cybersecurity/Clibot.git
 cd CLIBOT
 ```
 
-*(Si descargaste el archivo `.zip`, descomprímelo y accede a la carpeta extraída desde la terminal).*
-
----
-
-### Paso 2: Crear el Entorno Virtual e Instalar Dependencias
-
-Crea un entorno virtual aislado e instala los requerimientos necesarios:
+#### Paso 2: Crear el Entorno Virtual e Instalar Dependencias
 
 ```bash
 # 1. Crear el entorno virtual (.venv)
@@ -46,59 +76,21 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
----
+#### Paso 3: Configurar el comando global `clibot` (Opcional)
 
-### Paso 3: Configurar el comando global `clibot`
-
-Para poder ejecutar el asistente desde cualquier ubicación en la terminal simplemente escribiendo `clibot` (sin necesidad de activar el entorno virtual manualmente cada vez), elige una de las siguientes opciones:
-
-#### Opción A: Enlace Simbólico en `~/.local/bin` (Recomendado)
-
-1. Crea la carpeta `~/.local/bin` si aún no existe:
-   ```bash
-   mkdir -p ~/.local/bin
-   ```
-
-2. Crea un script ejecutable llamado `clibot` en `~/.local/bin`:
-   ```bash
-   cat << 'EOF' > ~/.local/bin/clibot
-   #!/usr/bin/env bash
-   PROJECT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
-   # Ruta absoluta al proyecto CLIBOT
-   CLIBOT_PATH="/ruta/a/tu/CLIBOT"
-
-   "${CLIBOT_PATH}/.venv/bin/python" "${CLIBOT_PATH}/llmah.py" "$@"
-   EOF
-   ```
-
-3. Sustituye `/ruta/a/tu/CLIBOT` por la ruta real de tu proyecto. Puedes hacerlo automáticamente con este comando ejecutado desde la carpeta del proyecto:
-   ```bash
-   cat << EOF > ~/.local/bin/clibot
-   #!/usr/bin/env bash
-   "$(pwd)/.venv/bin/python" "$(pwd)/llmah.py" "\$@"
-   EOF
-
-   chmod +x ~/.local/bin/clibot
-   ```
-
-4. Asegúrate de que `~/.local/bin` esté en tu `$PATH`. Si no lo está, agrégalo a tu archivo de configuración (`~/.bashrc` o `~/.zshrc`):
-   ```bash
-   echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-   source ~/.bashrc
-   ```
-
-#### Opción B: Alias en la Shell (`.bashrc` / `.zshrc`)
-
-Añade un alias directamente en la configuración de tu terminal ejecutando:
+Para ejecutar `clibot` desde cualquier ubicación:
 
 ```bash
-# Para Bash:
-echo "alias clibot='$(pwd)/.venv/bin/python $(pwd)/llmah.py'" >> ~/.bashrc
-source ~/.bashrc
+mkdir -p ~/.local/bin
+cat << EOF > ~/.local/bin/clibot
+#!/usr/bin/env bash
+"$(pwd)/.venv/bin/python" "$(pwd)/llmah.py" "\$@"
+EOF
+chmod +x ~/.local/bin/clibot
 
-# Para Zsh:
-echo "alias clibot='$(pwd)/.venv/bin/python $(pwd)/llmah.py'" >> ~/.zshrc
-source ~/.zshrc
+# Agregar al PATH si no está
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
 ---
@@ -199,6 +191,88 @@ Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 - `/status`: Muestra el estado del sistema y del modelo LLM configurado.
 - `/token` o `/token status`: Comprueba si hay token de GitHub sin revelarlo; `/token set` lo solicita oculto y lo guarda con permisos privados, y `/token clear` elimina el token guardado.
 - `/models`: Muestra modelos instalados y abre el catálogo en línea de Ollama; escribe un número para descargar uno. `/models search <texto>` filtra el catálogo; `/models pull <modelo[:variante]>` descarga y selecciona, y `/models use <modelo>` cambia entre los instalados. El catálogo requiere Internet.
+- `/micro on|off`: Activa o desactiva dictado de comandos en español con Vosk local. Mientras escucha, puedes hablar o escribir `/micro off`; también puedes decir «micro off» o pulsar Ctrl+C. El audio no se guarda ni se envía por Internet.
+- `/mic list|use`: Lista o cambia el modelo de reconocimiento de voz (similar a `/models`).
+- `/voice on|off|list|use`: Activa/desactiva respuesta de voz, lista perfiles disponibles o cambia la voz TTS. Por defecto usa una voz de mujer joven.
+- `/keys list|set|clear <servicio>`: Gestiona API keys para OpenAI, GitHub, Stack Exchange, Anthropic, Google, etc.
+
+**Configuración del micrófono:**
+La primera vez que ejecutes CLIBOT, te preguntará si deseas instalar el modelo de voz. Si aceptas, se descargarán automáticamente:
+- Vosk (librería de reconocimiento de voz)
+- Modelo español pequeño (~50 MB)
+- alsa-utils (en Linux, para capturar audio)
+
+Si instalas el modelo de voz, `/micro on` se activará automáticamente en las siguientes ejecuciones. Puedes desactivarlo con `/micro off`.
+
+Si prefieres instalarlo manualmente:
+```bash
+pip install -e '.[voice]'
+sudo apt install alsa-utils
+mkdir -p ~/.cache/clibot
+cd ~/.cache/clibot
+wget https://alphacephei.com/vosk/models/vosk-model-small-es-0.42.zip
+unzip vosk-model-small-es-0.42.zip
+rm vosk-model-small-es-0.42.zip
+```
+
+El modelo se guardará en `~/.cache/clibot/vosk-model-small-es-0.42/`. Opcionalmente, puedes configurar una ruta alternativa con `export CLIBOT_VOSK_MODEL=/ruta/a/tu/modelo`.
+
+**Modelos de voz más avanzados:**
+
+El modelo pequeño (`vosk-model-small-es-0.42`, ~50 MB) es básico y puede tener dificultades con:
+- Palabras en inglés mezcladas con español
+- Nombres de aplicaciones (Chrome, Wireshark, Nmap, etc.)
+- Reconocimiento en entornos ruidosos
+
+Para mejor reconocimiento, puedes descargar modelos más grandes:
+
+**Opción 1: Modelo Vosk español grande (recomendado)**
+```bash
+cd ~/.cache/clibot
+wget https://alphacephei.com/vosk/models/vosk-model-es-0.42.zip
+unzip vosk-model-es-0.42.zip
+rm vosk-model-es-0.42.zip
+```
+Este modelo (~1.8 GB) tiene mejor precisión en español, pero sigue siendo monolingüe.
+
+**Opción 2: Usar el modelo grande en CLIBOT**
+```bash
+/mic use ~/.cache/clibot/vosk-model-es-0.42
+/micro off
+/micro on
+```
+
+**Nota sobre modelos multilingües:**
+Para reconocimiento de español e inglés mezclados (incluyendo nombres de aplicaciones), se recomienda usar Whisper de OpenAI. Whisper es más avanzado pero requiere:
+```bash
+pip install openai-whisper
+```
+La integración con Whisper en CLIBOT requiere configuración adicional. Los modelos Whisper varían desde ~70 MB (base) hasta ~10 GB (large), con soporte nativo para múltiples idiomas y mejor reconocimiento de nombres técnicos.
+
+**Configuración de respuesta de voz (TTS):**
+Para que CLIBOT responda con voz, instala pyttsx3:
+```bash
+pip install -e '.[tts]'
+```
+Luego activa la respuesta de voz con `/voice on`.
+
+**Perfiles de voz disponibles:**
+- `default` - Mujer joven (voz predeterminada)
+- `female_young` - Mujer joven
+- `female_adult` - Mujer adulta
+- `male_young` - Hombre joven
+- `male_adult` - Hombre adulto
+
+**Comandos para gestionar la voz:**
+```bash
+/voice on              # Activar respuesta de voz
+/voice off             # Desactivar respuesta de voz
+/voice list            # Ver perfiles disponibles
+/voice use female_young  # Cambiar a perfil específico
+/voice status          # Ver estado actual (voz, velocidad, volumen)
+```
+
+**Nota:** Las voces disponibles dependen de tu sistema operativo. pyttsx3 detecta automáticamente las voces instaladas en tu sistema y las mapea a los perfiles. En Linux, es posible que necesites instalar voces adicionales del sistema para más opciones.
 - `/model on|off`: Activa o desactiva el LLM durante la sesión.
 - Puedes pedir en lenguaje natural «cierra Chrome», «cierra Spotify» y otras aplicaciones conocidas; CLIBOT muestra qué operación ejecutará y pide confirmación porque podría perderse trabajo sin guardar.
 - `/history`: Muestra el historial de la sesión actual.
