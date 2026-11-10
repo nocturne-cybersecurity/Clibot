@@ -1,12 +1,5 @@
 #!/usr/bin/env python3
-"""Script de instalación automatizada para CLIBOT.
 
-Este script configura todo lo necesario para ejecutar CLIBOT:
-- Crea el entorno virtual
-- Instala dependencias
-- Configura el alias global 'clibot'
-- Instala dependencias opcionales de voz (si el usuario desea)
-"""
 import os
 import shutil
 import subprocess
