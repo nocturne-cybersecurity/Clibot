@@ -36,6 +36,7 @@ def _expression(text):
     value=re.sub(r'(?i)\b(\d+(?:\.\d+)?)\s+al\s+cubo\b',r'(\1**3)',value)
     aliases={'seno':'sin','sen':'sin','coseno':'cos','tangente':'tan','logaritmo':'log','logaritmo10':'log10'}
     for source,target in aliases.items():value=re.sub(r'(?i)\b'+source+r'\b',target,value)
+    value=re.sub(r'(?i)\by\s+multiplic(?:a|alo|arla|arlo)\s+por\b|\bmultiplic(?:a|alo|arla|arlo)\s+por\b','*',value)
     value=re.sub(r'(?i)\b(sin|cos|tan|sqrt|cbrt|log10|log|ln|exp|abs|floor|ceil)\s+de\s+(.+)$',r'\1(\2)',value)
     for phrase,symbol in [('multiplicado por','*'),('dividido entre','/'),('dividido por','/'),('dividido','/'),('veces','*'),('por','*'),('entre','/'),('mas','+'),('menos','-')]:
         value=re.sub(r'\b'+phrase+r'\b',symbol,value)

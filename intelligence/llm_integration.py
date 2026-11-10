@@ -100,7 +100,7 @@ class LLMIntegration:
         # capability catalog plus unlimited tokens is what stalled replies
         # for minutes. Keep the window and the answer short.
         if self.provider == 'ollama':
-            token_limit=max(1,min(int(max_tokens if max_tokens is not None else (200 if json_mode else 220)),600))
+            token_limit=max(1,min(int(max_tokens if max_tokens is not None else (160 if json_mode else 128)),600))
             payload = {
                 'model': self.model,
                 'prompt': prompt,
@@ -116,7 +116,7 @@ class LLMIntegration:
             if json_mode:
                 payload['format'] = 'json'
             result = self._post_json(f'{self.base_url}/api/generate', payload,
-                                     {'Content-Type': 'application/json'}, 20)
+                                     {'Content-Type': 'application/json'}, 10)
             return str(result.get('response', '')).strip()
         if self.provider in {'openai', 'openai_compatible'}:
             token_limit=max(1,min(int(max_tokens if max_tokens is not None else 256),600))

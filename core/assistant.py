@@ -1,5 +1,6 @@
 """End-to-end assistant orchestration."""
 import re
+from datetime import datetime
 from capabilities import registry
 from core.parser import Parser
 from core.validator import Validator
@@ -24,7 +25,7 @@ class Assistant:
         configured_llm=self.config['settings'].get('model',{}).get('enabled','auto')
         use_llm = os.environ.get('CLIBOT_USE_LLM',str(configured_llm)).strip().lower()
         self.llm = None if use_llm in {'false', '0', 'off', 'no'} else LLMIntegration()
-        self.llm_timeout = 20.0
+        self.llm_timeout = 10.0
         self.audit_logger = AuditLogger()
     def _confirm(self,prompt):
         if self.auto_open_terminal and prompt.startswith('Confirm abrir una terminal (moderate)?'):return 'yes'
@@ -47,6 +48,31 @@ class Assistant:
 
     def _handle(self,request):
         phrase=normalize(request).strip(' .!?¿¡')
+
+        if re.search(r'\b(?:que|cual)\b.*\b(?:semana|numero de semana)\b|\ben que semana estamos\b',phrase):
+            iso=datetime.now().date().isocalendar()
+            return {'request':request,'message':f'Estamos en la semana {iso.week} del año {iso.year} (semana ISO).'}
+
+        if re.search(r'\b(?:recomiendas|recomienda|recomendarias)\b.*\bmodelo\b|\bmodelo\b.*\b(?:mas rapido|mas ligero)\b',phrase):
+            return {'request':request,'message':
+                    'Como prueba, consideraría `qwen2.5:1.5b`; `qwen2.5:0.5b` tiene aún menos parámetros, pero puede '
+                    'ser menos capaz. Por tamaño podrían usar menos recursos que Phi-3 mini, pero no he medido su '
+                    'velocidad en tu equipo y no puedo prometer que respondan más rápido: depende también de la '
+                    'cuantización, la CPU y el prompt. Puedes probar sin borrar Phi-3: `/models pull qwen2.5:1.5b` '
+                    'y luego `/models use qwen2.5:1.5b`. La descarga requiere Internet.'}
+
+        if re.fullmatch(r'(?:si|sí)(?: se)? abrio|(?:si|sí) se abrio la aplicacion',phrase):
+            event=self.context.last_operation_event
+            if event and event['operations'] and event['results']:
+                operation=event['operations'][-1]
+                outcome=event['results'][-1]
+                if operation['capability']=='browser' and operation['name'] in {'open_application','open_url'}:
+                    if outcome['success']:
+                        return {'request':request,'message':
+                                f"Sí: {operation['description'].capitalize()}. La solicitud al sistema terminó bien, "
+                                'aunque no puedo confirmar si la ventana quedó visible.'}
+                    return {'request':request,'message':
+                            f"No: {operation['description']} falló: {outcome['detail'] or 'sin más detalles'}"}
 
         offline_statement=bool(re.fullmatch(r'(?:no tengo|no hay|sin)\s+(?:internet|conexion)',phrase))
         offline_question=bool(re.search(r'\b(?:no tengo|no hay|sin)\b.{0,30}\b(?:internet|conexion)\b',phrase)
@@ -240,20 +266,18 @@ class Assistant:
             value=self._last_value('system','time')
             if value:
                 return {'request':request,'message':f'La hora local es {value["time"]} ({value["timezone"]}).'}
-        conversational=dialogue_response(request,self.context)
-        if conversational:
-            # A rule already answered. Asking Phi-3 to rewrite it sent the whole
-            # capability catalog and blocked the prompt for minutes.
-            return {'request':request,'message':conversational}
         if self._is_code_generation_request(request):
+            if re.fullmatch(r'(?:genera|generame|dame|escribe|crea|comparte)(?:\s+el)?\s+codigo',phrase):
+                return {'request':request,'clarification':'¿Qué debe hacer el código y en qué lenguaje?'}
             if self.llm and self.llm.is_available():
                 try:
                     answer=self.llm.generate_response(
-                        'Responde en español. Entrega una solución de código completa, ejecutable y adecuada para la petición; '
+                        'Responde en español. Entrega código completo y ejecutable para la petición; '
                         'incluye bloque de código, instrucciones mínimas para usarla y dependencias necesarias. '
                         'No afirmes que la probaste ni añadas enlaces o fuentes salvo que se pidan. '
-                        'Si falta un requisito esencial, pregunta antes de inventarlo. PETICIÓN: '+request[:700],
-                        max_tokens=240,
+                        'Si falta un requisito esencial, haz una pregunta breve. '
+                        +self._recent_context()+'PETICIÓN: '+request[:500],
+                        max_tokens=320,
                     ).strip()
                     if answer:return {'request':request,'message':answer[:6000],'reasoning':'local_model_code'}
                 except RuntimeError as exc:
@@ -261,6 +285,9 @@ class Assistant:
             return {'request':request,'message':
                     'Para generar y explicar código completo necesito un modelo de lenguaje activo. '
                     'No voy a sustituirlo por fragmentos de buscador. Activa Ollama con /models o configura un proveedor LLM.'}
+        conversational=dialogue_response(request,self.context)
+        if conversational:
+            return {'request':request,'message':conversational}
         if self._is_troubleshooting_request(request):
             if self.llm and self.llm.is_available():
                 try:
@@ -269,8 +296,9 @@ class Assistant:
                         'causas probables, comprobaciones concretas en orden, comandos de diagnóstico no destructivos '
                         'cuando sean pertinentes y qué salida compartir después. No ejecutes comandos, no inventes '
                         'el estado del equipo y no busques en la web ni incluyas fuentes salvo que se soliciten. '
-                        'Si falta el mensaje de error o contexto, dilo al final con claridad. PROBLEMA: '+request[:900],
-                        max_tokens=240,
+                        'Si falta el mensaje de error o contexto, dilo al final con claridad. '
+                        +self._recent_context()+'PROBLEMA: '+request[:900],
+                        max_tokens=160,
                     ).strip()
                     if answer:return {'request':request,'message':answer[:3500],'reasoning':'local_model_troubleshooting'}
                 except RuntimeError as exc:
@@ -300,8 +328,8 @@ class Assistant:
                     answer=self.llm.generate_response(
                         'Responde en español con una explicación completa y clara para principiantes. '
                         'Usa ejemplos si ayudan. No hagas búsquedas, no añadas enlaces ni afirmes hechos dudosos. '
-                        'PETICIÓN: '+request[:700],
-                        max_tokens=220,
+                        +self._recent_context()+'PETICIÓN: '+request[:700],
+                        max_tokens=128,
                     ).strip()
                     if answer:return {'request':request,'message':answer[:1500],'reasoning':'local_model'}
                 except RuntimeError as exc:
@@ -322,7 +350,7 @@ class Assistant:
                     message=self.llm.generate_response(
                         'Responde en español, en menos de 70 palabras. '
                         'Puedes crear texto original. No afirmes que tienes sentimientos. '
-                        'No ejecutes acciones. PETICIÓN: '+request[:700],
+                        'No ejecutes acciones. '+self._recent_context()+'PETICIÓN: '+request[:700],
                     )
                     if message.strip():return {'request':request,'message':message.strip()[:1500],'reasoning':'local_model'}
                 except RuntimeError as exc:
@@ -338,8 +366,8 @@ class Assistant:
                             'Responde directamente en español a la pregunta. Da contexto suficiente para que la respuesta '
                             'sea útil, pero evita rodeos, enlaces y fuentes no solicitadas. Si no estás seguro o el dato '
                             'puede haber cambiado, indícalo y ofrece buscarlo solo si el usuario lo pide. '
-                            'No ejecutes acciones. PREGUNTA: '+request[:700],
-                            max_tokens=220,
+                            'No ejecutes acciones. '+self._recent_context()+'PREGUNTA: '+request[:700],
+                            max_tokens=128,
                         ).strip()
                         if answer:return {'request':request,'message':answer[:2200],'reasoning':'local_model'}
                     except RuntimeError as exc:
@@ -400,6 +428,15 @@ class Assistant:
             return False
         if Assistant._is_open_ended_request(normalized):return False
         return True
+
+    def _recent_context(self):
+        turns=[]
+        for event in list(self.context.events)[-3:]:
+            request=event.get('request','').strip()
+            answer=event.get('message','').strip()
+            if request and answer:
+                turns.append(f'Usuario: {request[:140]}\nCLIBOT: {answer[:180]}')
+        return 'CONTEXTO RECIENTE:\n'+'\n'.join(turns)+'\n' if turns else ''
 
     @staticmethod
     def _is_educational_request(request):

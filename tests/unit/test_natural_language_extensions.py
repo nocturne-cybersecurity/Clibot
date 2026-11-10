@@ -1,6 +1,10 @@
 import json
 import os
+import subprocess
+from datetime import datetime
 from urllib.parse import parse_qs, urlparse
+
+import pytest
 
 from core.parser import Parser
 from core.assistant import Assistant
@@ -109,6 +113,74 @@ def test_search_and_plain_command_intents_are_structured():
     assert command.name == 'execute_command'
     assert command.arguments['command'] == 'ls -la'
     assert command.risk.value == 'high'
+
+
+def test_git_workflows_parse_local_and_remote_actions():
+    parser = Parser()
+    cases = {
+        'crea un repositorio git llamado demo': ('git_init', {'path': 'demo'}),
+        'clona https://github.com/owner/project.git en /tmp/project':
+            ('git_clone', {'url': 'https://github.com/owner/project.git', 'destination': '/tmp/project'}),
+        'clona https://github.com/owner/project.git en "/tmp/my project"':
+            ('git_clone', {'url': 'https://github.com/owner/project.git', 'destination': '/tmp/my project'}),
+        'git add README.md': ('git_add', {'path': '.', 'files': ['README.md']}),
+        'git add': ('git_add', {'path': '.'}),
+        'haz un commit con mensaje "corrige inicio"':
+            ('git_commit', {'path': '.', 'message': 'corrige inicio'}),
+        'git pull origin main': ('git_pull', {'path': '.', 'remote': 'origin', 'branch': 'main'}),
+        'git push': ('git_push', {'path': '.'}),
+        'git merge feature': ('git_merge', {'path': '.', 'branch': 'feature'}),
+        'git rebase main': ('git_rebase', {'path': '.', 'branch': 'main'}),
+    }
+    for request, (name, arguments) in cases.items():
+        plan = parser.parse(request)
+        operation = plan.operations[0]
+        assert operation.capability == 'development'
+        assert operation.name == name
+        assert operation.arguments == arguments
+        from capabilities import registry
+        from core.validator import Validator
+        assert Validator(registry).validate(plan)
+
+    assert parser.parse('git commit').clarification.startswith('¿Qué mensaje')
+    assert parser.parse('clona el repositorio').clarification.startswith('Indica la URL')
+
+
+def test_git_init_creates_repository_in_requested_directory(tmp_path):
+    from capabilities.development import git_add, git_commit, git_init, git_log
+
+    destination = tmp_path / 'new-project'
+    result = git_init(str(destination), initial_branch='main')
+    assert result['success']
+    assert (destination / '.git').is_dir()
+    assert result['branch'] == 'main'
+    subprocess.run(['git', '-C', str(destination), 'config', 'user.name', 'CLIBOT test'], check=True)
+    subprocess.run(['git', '-C', str(destination), 'config', 'user.email', 'clibot-test@example.invalid'], check=True)
+    (destination / 'README.md').write_text('test repository\n')
+    assert git_add(str(destination), ['README.md'])['success']
+    assert git_commit(str(destination), 'initial commit')['success']
+    assert git_log(str(destination))['commits'][0]['message'].endswith('initial commit')
+
+
+def test_git_clone_uses_argv_and_rejects_embedded_credentials(monkeypatch, tmp_path):
+    from capabilities import development
+
+    calls = []
+    monkeypatch.setattr(development.subprocess, 'run', lambda args, **kwargs:
+                        calls.append((args, kwargs)) or subprocess.CompletedProcess(args, 0, 'cloned', ''))
+    destination = tmp_path / 'clone'
+    result = development.clone('https://github.com/owner/project.git', str(destination))
+    assert result['path'] == str(destination.resolve())
+    assert calls[0][0] == ['git', 'clone', '--', 'https://github.com/owner/project.git', str(destination.resolve())]
+    assert 'shell' not in calls[0][1]
+
+    monkeypatch.chdir(tmp_path)
+    ssh_result = development.clone('git@github.com:owner/ssh-project.git')
+    assert ssh_result['path'] == str((tmp_path / 'ssh-project').resolve())
+    assert calls[1][0][-1] == str((tmp_path / 'ssh-project').resolve())
+
+    with pytest.raises(ValueError, match='No incluyas credenciales'):
+        development.clone('https://user:token@example.com/repo.git', str(tmp_path / 'private'))
 
 
 def test_translation_capability_parses_google_response(monkeypatch):
@@ -294,7 +366,7 @@ def test_project_folder_statement_is_remembered_in_session_context():
 
 def test_code_example_requests_use_search_source_and_return_code(monkeypatch):
     parser=Parser()
-    operation=parser.parse('necesito un ejemplo de código Python para leer JSON').operations[0]
+    operation=parser.parse('busca un ejemplo de código Python para leer JSON en Stack Overflow').operations[0]
     assert (operation.capability,operation.name)==('stack_exchange','search_code_examples')
     assert operation.arguments['query']=='python read json'
     github=parser.parse('busca un ejemplo de código Python en GitHub').operations[0]
@@ -318,7 +390,7 @@ def test_code_generation_returns_complete_model_answer_without_search():
         def is_available(self):return True
         def generate_response(self,prompt,**kwargs):
             assert 'código' in prompt
-            assert kwargs['max_tokens']==240
+            assert kwargs['max_tokens']==320
             return '```python\nimport json\nwith open(\"data.json\", encoding=\"utf-8\") as file:\n    data = json.load(file)\nprint(data)\n```\nGuárdalo como `leer_json.py` y ejecútalo con `python leer_json.py`.'
     assistant.llm=Model()
     assistant.registry.get('web').operations['search']=lambda *args,**kwargs:searches.append(args) or {}
@@ -335,6 +407,11 @@ def test_code_search_only_runs_when_a_source_is_explicitly_requested():
     response=assistant.handle('Busca un ejemplo de código Python en GitHub')
     assert response['plan'].operations[0].capability=='github'
     assert response['plan'].operations[0].name=='search_code'
+
+
+def test_plain_code_example_request_does_not_make_parser_search_stackoverflow():
+    plan=Parser().parse('necesito un ejemplo de código Python para leer JSON')
+    assert not plan.operations
 
 
 def test_troubleshooting_uses_model_and_does_not_trigger_web_search():
@@ -462,6 +539,58 @@ def test_help_lists_token_and_model_commands():
     assert {'/help','/token','/models'} <= names
 
 
+def test_banner_help_points_to_models_browser(capsys,monkeypatch):
+    from interface.terminal import Terminal
+    terminal=Terminal(Assistant())
+    monkeypatch.setattr(terminal,'_model_info',lambda:(False,'offline · reglas'))
+    monkeypatch.setattr(terminal.assistant,'capabilities',lambda:[])
+    terminal._banner()
+    rendered=capsys.readouterr().out
+    assert '/help' in rendered and '/models' in rendered and '/exit' in rendered
+
+
+def test_models_browser_lists_installed_and_live_catalog(monkeypatch,capsys):
+    from interface.terminal import Terminal
+    terminal=Terminal(Assistant())
+    monkeypatch.setattr(terminal,'_ollama_models',lambda:[{'name':'phi3:mini','size':2_200_000_000}])
+    monkeypatch.setattr(terminal,'_ollama_catalog',lambda query='':[
+        {'name':'qwen2.5','description':'Multilingual model','variants':['0.5b','1.5b']},
+    ])
+    monkeypatch.setattr('interface.terminal.sys.stdin',type('NonTTY',(),{'isatty':lambda _self:False})())
+    terminal._cmd_models('')
+    rendered=capsys.readouterr().out
+    assert 'phi3:mini' in rendered
+    assert 'qwen2.5' in rendered
+    assert '0.5b, 1.5b' in rendered
+    assert '/models pull <modelo[:variante]>' in rendered
+
+
+def test_models_catalog_query_and_interactive_selection_downloads_model(monkeypatch):
+    from interface.terminal import Terminal
+    terminal=Terminal(Assistant())
+    queries=[]
+    downloaded=[]
+    monkeypatch.setattr(terminal,'_ollama_models',lambda:[])
+    monkeypatch.setattr(terminal,'_ollama_catalog',lambda query='':
+                        queries.append(query) or [{'name':'qwen2.5','description':'Qwen','variants':['0.5b','1.5b']}])
+    monkeypatch.setattr(terminal,'_pull_ollama_model',downloaded.append)
+    monkeypatch.setattr('interface.terminal.sys.stdin',type('TTY',(),{'isatty':lambda _self:True})())
+    selections=iter(['1','2'])
+    monkeypatch.setattr('builtins.input',lambda _prompt:next(selections))
+    terminal._cmd_models('search qwen')
+    assert queries==['qwen']
+    assert downloaded==['qwen2.5:1.5b']
+
+
+def test_ollama_catalog_parser_extracts_names_descriptions_and_size_tags():
+    from interface.terminal import _OllamaCatalogParser
+    parser=_OllamaCatalogParser()
+    parser.feed('''<li><a href="/library/qwen2.5"><span>qwen2.5</span><p>Multilingual model</p>
+        <span>tools</span><span class="bg-[#ddf4ff]">0.5b</span><span class="bg-[#ddf4ff]">1.5b</span>
+        <span>45.3M</span></a></li>''')
+    assert parser.models==[{'name':'qwen2.5','description':'Multilingual model','variants':['0.5b','1.5b']}]
+
+
 def test_models_command_selects_only_installed_model(monkeypatch):
     from interface.terminal import Terminal
 
@@ -524,6 +653,101 @@ def test_compound_spoken_math_preserves_precedence_and_square_root():
         assert plan.operations, request
         expression = plan.operations[0].arguments['expression']
         assert evaluate(expression)['result'] == expected, (request, expression)
+
+
+def test_spoken_multiply_after_square_roots_is_parsed_correctly():
+    response=Assistant().handle('Calcula la raiz cuadrada de 144 y multiplicalo por la raiz cuadrada de 81')
+    assert response['results'][0].success
+    assert response['results'][0].data['value']['result']==108
+
+
+def test_greeting_about_today_does_not_turn_into_date_search_or_model_call():
+    assistant=Assistant()
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,*_args,**_kwargs):
+            raise AssertionError('greeting should use conversational handling')
+    assistant.llm=Model()
+    response=assistant.handle('Hola, como te encuentras el dia de hoy?')
+    assert response['message'].startswith('¡Hola!')
+    assert not response.get('plan') and not response.get('results')
+
+
+def test_week_number_is_answered_locally_without_model():
+    assistant=Assistant()
+    assistant.llm=None
+    response=assistant.handle('En que semana estamos')
+    expected=datetime.now().date().isocalendar()
+    assert response['message']==f'Estamos en la semana {expected.week} del año {expected.year} (semana ISO).'
+
+
+def test_calculator_code_request_without_model_does_not_invent_static_code():
+    assistant=Assistant()
+    assistant.llm=None
+    response=assistant.handle('Dame el codigo para una calculadora en python')
+    assert 'modelo de lenguaje activo' in response['message']
+    assert not response.get('plan') and not response.get('results')
+
+
+def test_calculator_code_request_uses_model_not_a_prebuilt_template():
+    assistant=Assistant()
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt,**kwargs):
+            assert 'calculadora' in prompt
+            assert 'PETICIÓN:' in prompt
+            return '```python\nprint("Código generado para la calculadora")\n```'
+    assistant.llm=Model()
+    response=assistant.handle('Dame el codigo para una calculadora en python')
+    assert response['reasoning']=='local_model_code'
+    assert 'Código generado para la calculadora' in response['message']
+
+
+def test_vague_code_request_asks_what_to_build_instead_of_generic_chitchat():
+    response=Assistant().handle('Genera codigo')
+    assert response['clarification']=='¿Qué debe hacer el código y en qué lenguaje?'
+
+
+def test_explicit_stackoverflow_code_search_uses_attributed_source():
+    assistant=Assistant()
+    assistant.llm=None
+    response=assistant.handle('Busca un ejemplo de código Python para una calculadora en Stack Overflow')
+    operation=response['plan'].operations[0]
+    assert (operation.capability,operation.name)==('stack_exchange','search_code_examples')
+    assert 'python' in operation.arguments['query']
+    assert 'calculadora' in operation.arguments['query']
+
+
+def test_model_recommendation_uses_hardware_aware_quick_local_guidance():
+    response=Assistant().handle('Me recomiendas otro modelo?')
+    assert 'qwen2.5:1.5b' in response['message']
+    assert 'qwen2.5:0.5b' in response['message']
+    assert '/models pull qwen2.5:1.5b' in response['message']
+
+
+def test_open_url_followup_explains_whether_launch_succeeded(monkeypatch):
+    assistant=Assistant()
+    monkeypatch.setitem(assistant.registry.get('browser').operations,'open_url',
+                        lambda **_kwargs:{'url':'https://www.facebook.com','message':'browser requested'})
+    opened=assistant.handle('Abre facebook')
+    assert opened['results'][0].success
+    followup=assistant.handle('Si se abrio')
+    assert 'terminó bien' in followup['message']
+    assert 'no puedo confirmar' in followup['message']
+
+
+def test_open_question_prompt_includes_recent_conversation_context():
+    assistant=Assistant()
+    assistant.context.record_exchange('Estoy aprendiendo Python',{'message':'¡Perfecto! Puedo ayudarte con ejemplos.'})
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt,**_kwargs):
+            assert 'Estoy aprendiendo Python' in prompt
+            assert 'PREGUNTA: ¿Por qué Python usa indentación?' in prompt
+            return 'Python usa indentación para delimitar bloques de código.'
+    assistant.llm=Model()
+    response=assistant.handle('¿Por qué Python usa indentación?')
+    assert response['message'].startswith('Python usa indentación')
 
 
 def test_web_search_answer_is_not_cut_by_formatter_and_wraps_to_terminal_width(monkeypatch):

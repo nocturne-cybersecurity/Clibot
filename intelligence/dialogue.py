@@ -24,6 +24,7 @@ def _choice(options, context):
 EXACT = {
     # --- Respuestas originales -------------------------------------------
     'hola': ('¡Hola! ¿En qué te ayudo?', '¡Hola! ¿Qué necesitas?', '¡Hola! ¿Qué puedo hacer por ti?', '¡Hola! ¿En qué puedo ayudarte hoy?'),
+    'hola como te encuentras el dia de hoy': '¡Hola! Estoy funcionando y lista para ayudarte. ¿Qué necesitas?',
     'claro': ('Claro. Dime.', 'Perfecto, te sigo.', 'Por supuesto, cuéntame.', 'Entendido, continúa.'),
     'perfecto': ('¡Genial!', 'Perfecto.', '¡Excelente!', '¡Muy bien!'),
     'gracias': ('¡De nada!', 'Con gusto.', '¡Un placer!', '¡No hay de qué!'),
@@ -1565,6 +1566,7 @@ def _pick(answer, context):
 
 def respond(text, context=None):
     s = normalize(text).strip(' .!?¿¡')
+    s = ' '.join(re.sub(r'[,;]+', ' ', s).split())
     s = re.sub(r'\bllmah\b', '', s).strip()
     s = re.sub(r'^(?:mmm+|aja+|jaja+|pues|oye)\s+', '', s)
 

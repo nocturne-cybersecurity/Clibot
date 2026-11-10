@@ -6,11 +6,19 @@ Configuration files use JSON syntax, which is also a strict YAML 1.2 subset; the
 
 ## Optional language model
 
-LLMAH needs no model for local system operations. If a local Ollama server and at least one model are available, it detects them through the loopback API and uses them for open-ended answers and ambiguous requests. To select a specific installed model, set `CLIBOT_LLM_PROVIDER=ollama` and `CLIBOT_LLM_MODEL` to the exact name shown by `ollama list`. `CLIBOT_USE_LLM=false` disables model use for a session. No model is downloaded implicitly. The provider adapter uses Python's standard library.
+LLMAH needs no model for local system operations. If a local Ollama server and at least one model are available, it detects them through the loopback API and uses them for open-ended answers and ambiguous requests. To select a specific installed model, set `CLIBOT_LLM_PROVIDER=ollama` and `CLIBOT_LLM_MODEL` to the exact name shown by `ollama list`. `CLIBOT_USE_LLM=false` disables model use for a session. No model is downloaded implicitly. The provider adapter uses Python's standard library. Ollama requests use a 10-second socket timeout; this is not a strict end-to-end response deadline. Smaller models such as Qwen2.5 1.5B or 0.5B have fewer parameters than Phi-3 mini, but actual latency and answer quality depend on the machine, quantization, and prompt. These are candidates to benchmark locally, not guaranteed speed recommendations.
+
+In the interactive CLI, `/models` lists installed models and opens Ollama's online catalog. Choose a result and variant to download it; type `buscar <texto>` to filter the catalog. `/models search <texto>` displays matching results, `/models pull <name[:tag]>` downloads directly, and `/models use <name>` switches to an installed model. The online catalog requires Internet; when unavailable, installed-model management and direct pulls still work if the local Ollama server is reachable.
+
+Requests to create or explain code are routed to the configured model when available; the assistant does not silently substitute a built-in code template. Explicit requests to find existing examples on Stack Overflow or GitHub use their respective integrations and retain attribution. A plain request for an example does not trigger an external search unless a source is named.
 
 OpenAI-compatible services are opt-in through `CLIBOT_LLM_PROVIDER=openai` plus `LLM_API_KEY`, or through `CLIBOT_LLM_PROVIDER=openai_compatible`, `CLIBOT_LLM_BASE_URL`, and `LLM_API_KEY`. Those services receive unrecognized requests and a short redacted recent-context summary. Keep credentials in environment variables rather than tracked project files. Model-generated operations still require the ordinary capability schemas and risk checks.
 
 Stack Overflow code examples are fetched from the public Stack Exchange API and rendered with answer attribution and links. GitHub code search uses the authenticated code-search API and requires `GITHUB_TOKEN`; without it, the assistant reports that requirement instead of falling back to an unrelated search.
+
+## Git
+
+Git requests support local repository initialization, cloning HTTP(S)/SSH remotes, staging files, commits, status/branches/diff/log, stash, checkout, pull, push, merge, and rebase. For example, create a repository in a named directory, clone a repository URL, stage files with `git add`, then commit with a message. Commit records already-staged changes. Pull, push, checkout, merge, and rebase require confirmation; init, clone, add, and commit follow the normal configured risk policy. Git errors are returned instead of being reported as successful operations.
 
 ## Add a natural-language feature
 

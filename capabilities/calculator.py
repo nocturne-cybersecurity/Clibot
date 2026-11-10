@@ -1,5 +1,5 @@
 """Bounded calculator for scalar arithmetic and common scientific functions."""
-import ast, math, operator
+import ast, math, operator, re, unicodedata
 
 _BINARY={ast.Add:operator.add,ast.Sub:operator.sub,ast.Mult:operator.mul,ast.Div:operator.truediv,ast.FloorDiv:operator.floordiv,ast.Mod:operator.mod,ast.Pow:operator.pow}
 _UNARY={ast.UAdd:operator.pos,ast.USub:operator.neg}
@@ -13,6 +13,16 @@ _CONSTANTS={'pi':math.pi,'e':math.e,'tau':math.tau}
 
 def evaluate(expression):
     expression=str(expression).strip().lower()
+    expression=''.join(c for c in unicodedata.normalize('NFKD',expression) if not unicodedata.combining(c))
+
+    expression=re.sub(r'\braiz\s+cubica\s+de\s*(-?\d+(?:\.\d+)?)',r'cbrt(\1)',expression)
+    expression=re.sub(r'\braiz(?:\s+cuadrada)?\s+de\s*(-?\d+(?:\.\d+)?)',r'sqrt(\1)',expression)
+    expression=re.sub(
+        r'\by\s+multiplic(?:a|alo|arla|arlo)\s+por\b|\bmultiplic(?:ar|a|alo|arla|arlo)\s+por\b',
+        '*',
+        expression,
+    )
+    expression=re.sub(r'\bdividido\s+entre\b|\bdividelo\s+entre\b','/',expression)
     
     # Convert natural language to math notation
     replacements = {

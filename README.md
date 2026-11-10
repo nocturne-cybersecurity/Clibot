@@ -164,8 +164,14 @@ clibot --command "muestra los puertos en escucha"
 ### Git
 ```bash
 clibot --command "muestra el estado de git"
-clibot --command "ejecuta comando: git status"
+clibot --command "crea un repositorio git llamado demo"
+clibot --command "clona https://github.com/usuario/proyecto.git"
+clibot --command "git add README.md"
+clibot --command "haz un commit con mensaje 'documenta el proyecto'"
+clibot --command "git pull origin main"
+clibot --command "git push origin main"
 ```
+Pull, push, checkout, merge y rebase requieren confirmación; init, clone, add y commit se ejecutan según la ruta y los cambios que indiques. Para commit, primero prepara los archivos con `git add`; los errores de Git se muestran en vez de tratarse como éxito.
 
 ### Comandos Multi-línea
 Para comandos largos, usa `\` al final de la línea:
@@ -192,7 +198,7 @@ Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 - `/help` o `/capabilities`: Muestra las capacidades y operaciones disponibles.
 - `/status`: Muestra el estado del sistema y del modelo LLM configurado.
 - `/token` o `/token status`: Comprueba si hay token de GitHub sin revelarlo; `/token set` lo solicita oculto y lo guarda con permisos privados, y `/token clear` elimina el token guardado.
-- `/models` o `/models list`: Lista modelos locales de Ollama; `/models use <modelo>` cambia el modelo y `/models pull <modelo>` descarga y selecciona uno.
+- `/models`: Muestra modelos instalados y abre el catálogo en línea de Ollama; escribe un número para descargar uno. `/models search <texto>` filtra el catálogo; `/models pull <modelo[:variante]>` descarga y selecciona, y `/models use <modelo>` cambia entre los instalados. El catálogo requiere Internet.
 - `/model on|off`: Activa o desactiva el LLM durante la sesión.
 - Puedes pedir en lenguaje natural «cierra Chrome», «cierra Spotify» y otras aplicaciones conocidas; CLIBOT muestra qué operación ejecutará y pide confirmación porque podría perderse trabajo sin guardar.
 - `/history`: Muestra el historial de la sesión actual.
@@ -208,7 +214,9 @@ Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 
 ##  Uso Opcional con Modelo Local (Ollama)
 
-CLIBOT funciona sin depender de un modelo remoto. Si **Ollama** está ejecutándose con un modelo instalado, lo detecta automáticamente para responder preguntas abiertas y entender peticiones que no coinciden con una regla. Desde la terminal interactiva puedes listar, descargar y seleccionar modelos con `/models`, por ejemplo `/models pull llama3.2` y `/models use llama3.2`. La selección se guarda en `~/.config/clibot/llm.json` (permisos privados); también puedes configurar el modelo con variables de entorno:
+CLIBOT funciona sin depender de un modelo remoto. Si **Ollama** está ejecutándose con un modelo instalado, lo detecta automáticamente para responder preguntas abiertas y entender peticiones que no coinciden con una regla. `/models` muestra los modelos locales y consulta el catálogo oficial de Ollama; en una terminal interactiva puedes buscar modelos y escoger una variante para descargarla. Para uso no interactivo están `/models search <texto>` y `/models pull <modelo[:variante]>`. La selección se guarda en `~/.config/clibot/llm.json` (permisos privados); también puedes configurar el modelo con variables de entorno:
+
+En equipos modestos con CPU, `qwen2.5:1.5b` o `qwen2.5:0.5b` son candidatos más pequeños que Phi-3 mini por número de parámetros. Eso no garantiza que respondan más rápido ni con la misma calidad: depende de CPU, cuantización, memoria y longitud del prompt; no se incluye un benchmark de este equipo. Consulta las fichas oficiales de [Qwen2.5 1.5B](https://ollama.com/library/qwen2.5:1.5b) y [Qwen2.5 0.5B](https://ollama.com/library/qwen2.5:0.5b). La petición local de Ollama usa un timeout de socket de 10 segundos, que evita esperas indefinidas por falta de respuesta, pero no es una garantía de duración total. Descargar un modelo requiere Internet y no se hace automáticamente.
 
 ```bash
 export CLIBOT_LLM_PROVIDER=ollama
@@ -227,7 +235,7 @@ clibot
 
 ### Integraciones con APIs externas
 
-Las preguntas abiertas y las solicitudes para generar código usan el modelo activo, sin abrir una búsqueda web ni añadir fuentes no solicitadas. Para investigar en línea, pídelo expresamente (por ejemplo, «busca en la web…»). Si solicitas código de GitHub o Stack Overflow, CLIBOT muestra atribución y enlaces; la búsqueda de código de GitHub requiere un token personal:
+Las solicitudes para crear o explicar código usan el modelo activo; no se sustituyen por plantillas fijas ni disparan búsquedas web. Para buscar código existente, pide explícitamente que lo busque en GitHub o Stack Overflow; esos resultados conservan atribución y enlaces. Para investigar otros temas en línea, pídelo expresamente (por ejemplo, «busca en la web…»). La búsqueda de código de GitHub requiere un token personal:
 
 ```bash
 # GitHub (configúralo de forma oculta desde /token set o usa la variable de entorno)

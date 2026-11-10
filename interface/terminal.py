@@ -21,12 +21,15 @@ import getpass
 import json
 import os
 import random
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from datetime import datetime
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlencode
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -96,7 +99,7 @@ COMMANDS = [
     ('/verbose', '', 'Alternar modo detallado'),
     ('/paginate', '', 'Alternar paginación'),
     ('/model', '[on|off]', 'Activar o desactivar el modelo'),
-    ('/models', '[list|use|pull]', 'Listar, cambiar o descargar modelos Ollama'),
+    ('/models', '[search <texto>|use|pull]', 'Explorar, buscar, cambiar o descargar modelos Ollama'),
     ('/token', '[set|status|clear]', 'Configurar token de GitHub sin mostrarlo'),
     ('/run', '<cmd>', 'Ejecutar un comando'),
     ('/cd', '<dir>', 'Cambiar de directorio'),
@@ -160,6 +163,51 @@ def _gradient(line, start=(125, 211, 252), end=(196, 167, 231)):
     return out
 
 
+class _OllamaCatalogParser(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.models=[]
+        self.current=None
+        self.in_description=False
+        self.in_variant=False
+
+    def handle_starttag(self, tag, attrs):
+        attributes=dict(attrs)
+        if tag=='li':
+            self.current={'name':None,'description':[],'spans':[]}
+        elif self.current is not None:
+            if tag=='a':
+                href=attributes.get('href','')
+                match=re.fullmatch(r'/library/([a-zA-Z0-9._-]+)',href)
+                if match:self.current['name']=match.group(1)
+            elif tag=='p' and not self.current['description']:
+                self.in_description=True
+            elif tag=='span' and 'bg-[#ddf4ff]' in attributes.get('class',''):
+                self.in_variant=True
+
+    def handle_endtag(self, tag):
+        if tag=='p':self.in_description=False
+        elif tag=='span':self.in_variant=False
+        elif tag=='li' and self.current is not None:
+            name=self.current['name']
+            if name:
+                description=' '.join(' '.join(self.current['description']).split())
+                variants=[]
+                for text in self.current['spans']:
+                    value=''.join(text.split()).lower()
+                    if re.fullmatch(r'\d+(?:\.\d+)?[mb]',value) and value not in variants:
+                        variants.append(value)
+                self.models.append({'name':name,'description':description,'variants':variants})
+            self.current=None
+            self.in_description=False
+            self.in_variant=False
+
+    def handle_data(self, data):
+        if self.current is None:return
+        if self.in_description:self.current['description'].append(data)
+        if self.in_variant:self.current['spans'].append(data)
+
+
 class _Spinner:
     """Renderable dinámico: se recalcula en cada refresco de rich.Live."""
     FRAMES = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
@@ -195,7 +243,7 @@ class _SlashCompleter(Completer):
                     yield Completion(opt, start_position=-len(arg))
         elif low.startswith('/models '):
             arg = text[8:]
-            for opt in ('list', 'use ', 'pull '):
+            for opt in ('list', 'search ', 'use ', 'pull '):
                 if opt.startswith(arg.lower()):
                     yield Completion(opt, start_position=-len(arg))
         elif text.startswith('/') and ' ' not in text:
@@ -578,7 +626,7 @@ class Terminal:
         except Exception:
             pass
         info.add_row('Ayuda', Text.assemble(('/help', f'bold {OK}'), ('  ·  ', DIM),
-                                            ('/model', f'bold {ACCENT}'), ('  ·  ', DIM),
+                                            ('/models', f'bold {ACCENT}'), ('  ·  ', DIM),
                                             ('/exit', f'bold {PURPLE}')))
         body = Group(*[_gradient(l) for l in LOGO], Text(''),
                      Text('Asistente Linux local · escribe en lenguaje natural', style=DIM),
@@ -608,7 +656,7 @@ class Terminal:
         self.console.print(cmds)
         self.console.print(keys)
         self.console.print(ex)
-        self.console.print(Text('  /token set guarda GitHub Token localmente; /models list|use|pull gestiona Ollama.', style=DIM))
+        self.console.print(Text('  /token set guarda GitHub Token localmente; /models explora el catálogo de Ollama.', style=DIM))
         self.console.print(Text('  ⚠ Las acciones importantes piden confirmación.', style=WARN))
 
     def _cmd_caps(self, _a):
@@ -751,6 +799,26 @@ class Terminal:
             raise RuntimeError('Ollama devolvió una lista de modelos no válida.')
         return [model for model in models if isinstance(model, dict) and isinstance(model.get('name'), str)]
 
+    def _ollama_catalog(self, query=''):
+        params={'sort':'popular'}
+        if query:params['q']=query
+        url='https://ollama.com/library?'+urlencode(params)
+        request=Request(url,headers={
+            'User-Agent':'CLIBOT model browser',
+            'HX-Request':'true',
+            'HX-Target':'repo',
+        })
+        try:
+            with urlopen(request,timeout=5) as response:
+                body=response.read(2_000_000).decode('utf-8')
+        except (HTTPError,URLError,TimeoutError,OSError,UnicodeDecodeError) as exc:
+            raise RuntimeError(f'No se pudo consultar el catálogo de Ollama: {exc}') from exc
+        parser=_OllamaCatalogParser()
+        parser.feed(body)
+        if not parser.models and '<div' not in body:
+            raise RuntimeError('Ollama devolvió una respuesta de catálogo no válida.')
+        return parser.models
+
     def _save_ollama_model(self, model):
         path = self._llm_config_path()
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -779,22 +847,10 @@ class Terminal:
         action = action.casefold() if action else 'list'
         model = model.strip()
         if action in {'list', 'ls'} and not model:
-            try:
-                models = self._ollama_models()
-            except RuntimeError as exc:
-                self.console.print(Text(f'  {exc} · inicia Ollama e inténtalo de nuevo.', style=ERR))
-                return
-            if not models:
-                self.console.print(Text('  No hay modelos descargados. Usa /models pull <modelo>.', style=DIM))
-                return
-            current = getattr(self.assistant.llm, 'model', None)
-            for item in models:
-                name = item['name']
-                marker = '● ' if name == current else '  '
-                size = item.get('size')
-                size_text = f' · {size / 1_000_000_000:.1f} GB' if isinstance(size, (int, float)) else ''
-                self.console.print(Text(f'  {marker}{name}{size_text}', style=OK if name == current else DIM))
-            self.console.print(Text('  Cambiar: /models use <modelo> · Descargar: /models pull <modelo>', style=DIM))
+            self._show_models_catalog()
+            return
+        if action in {'search','buscar'} and model:
+            self._show_models_catalog(model)
             return
         if action == 'use' and model:
             try:
@@ -812,7 +868,88 @@ class Terminal:
                 char.isalnum() or char in '._:/-' for char in model):
             self._pull_ollama_model(model)
             return
-        self.console.print(Text('  Uso: /models [list | use <modelo> | pull <modelo>]', style=DIM))
+        self.console.print(Text('  Uso: /models [search <texto> | use <modelo> | pull <modelo>]', style=DIM))
+
+    def _show_models_catalog(self, query=''):
+        current=getattr(self.assistant.llm,'model',None)
+        try:
+            installed=self._ollama_models()
+        except RuntimeError as exc:
+            installed=[]
+            self.console.print(Text(f'  Modelos instalados: no se pudo consultar Ollama ({exc}).',style=WARN))
+        if installed:
+            table=self._table('Modelos instalados')
+            for item in installed:
+                name=item['name']
+                size=item.get('size')
+                size_text=f'{size/1_000_000_000:.1f} GB' if isinstance(size,(int,float)) else ''
+                table.add_row(Text('●' if name==current else ' ',style=OK),
+                              Text(name,style=OK if name==current else TEXT),Text(size_text,style=DIM))
+            self.console.print(table)
+        else:
+            self.console.print(Text('  Aún no hay modelos locales instalados.',style=DIM))
+        try:
+            catalog=self._ollama_catalog(query)
+        except RuntimeError as exc:
+            self.console.print(Text(f'  {exc} · puedes verlos en https://ollama.com/library',style=WARN))
+            return
+        title='Catálogo Ollama' + (f' · búsqueda: {query}' if query else ' · populares')
+        table=self._table(title)
+        for index,item in enumerate(catalog,1):
+            variants=', '.join(item['variants']) or 'latest'
+            desc=item['description']
+            if len(desc)>88:desc=desc[:85].rstrip()+'…'
+            table.add_row(Text(str(index),style=f'bold {PURPLE}'),
+                          Text(item['name'],style=ACCENT),
+                          Text(variants,style=DIM),
+                          Text(desc,style=TEXT))
+        if catalog:self.console.print(table)
+        else:self.console.print(Text('  No se encontraron modelos con esa búsqueda.',style=DIM))
+        self.console.print(Text('  Busca en el catálogo: /models search <texto>',style=DIM))
+        if not catalog:return
+        if not sys.stdin.isatty():
+            self.console.print(Text('  Descarga: /models pull <modelo[:variante]> · selecciona: /models use <modelo>',style=DIM))
+            return
+        by_name={item['name']:item for item in catalog}
+        while True:
+            try:
+                choice=input('  Número/modelo para descargar, «buscar <texto>» o Enter para salir: ').strip()
+            except (EOFError,KeyboardInterrupt):
+                self.console.print(Text('\n  Selector de modelos cerrado.',style=DIM))
+                return
+            if not choice:return
+            if choice.casefold().startswith(('buscar ','search ')):
+                query=choice.split(' ',1)[1].strip()
+                if query:
+                    self._show_models_catalog(query)
+                return
+            if choice.isdigit() and 1<=int(choice)<=len(catalog):
+                item=catalog[int(choice)-1]
+                selected=item['name']
+                variants=item['variants']
+                if variants:
+                    self.console.print(Text('  Variantes: '+', '.join(
+                        f'{index}. {variant}' for index,variant in enumerate(variants,1)),style=DIM))
+                    try:
+                        variant=input('  Número o etiqueta de variante (Enter para latest): ').strip().lower()
+                    except (EOFError,KeyboardInterrupt):
+                        self.console.print(Text('\n  Descarga cancelada.',style=WARN))
+                        return
+                    if variant:
+                        if variant.isdigit() and 1<=int(variant)<=len(variants):
+                            variant=variants[int(variant)-1]
+                        if variant not in variants:
+                            self.console.print(Text('  Variante no válida; usa una de las etiquetas mostradas.',style=WARN))
+                            continue
+                        selected=f'{selected}:{variant}'
+            else:
+                selected=choice
+                base=selected.split(':',1)[0]
+                if base not in by_name:
+                    self.console.print(Text('  Elige un número de la lista o un nombre que aparezca en ella.',style=WARN))
+                    continue
+            self._pull_ollama_model(selected)
+            return
 
     def _pull_ollama_model(self, model):
         request = Request(self._ollama_url() + '/api/pull',

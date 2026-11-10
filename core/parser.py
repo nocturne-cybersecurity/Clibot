@@ -7,6 +7,7 @@ todas son alcanzables, así una regla nueva no puede tapar a otra sin avisar.
 Las listas grandes (sitios, apps, servicios, typos) viven en ``parser_data.py``.
 """
 import re
+import shlex
 import unicodedata
 import shutil
 from difflib import get_close_matches
@@ -1255,10 +1256,103 @@ def _dev_path(name, timeout=None):
 
 
 def build_git_checkout(s, text, ctx):
-    branch = re.search(r'(?:a|to)\s+([\w-]+)', s)
+    branch = re.search(r'\bgit\s+checkout\s+([\w./-]+)', s)
     if not branch:
         return _ask(text, 'Indica la rama o commit')
-    return _plan(text, _op('development', 'git_checkout', {'branch_or_commit': branch.group(1)}, Risk.MODERATE))
+    return _plan(text, _op('development', 'git_checkout', {
+        'path': _git_path_argument(text), 'branch_or_commit': branch.group(1)}, Risk.MODERATE))
+
+
+def _git_path_argument(text):
+    quoted = re.search(r'\b(?:en|desde|in|from)\s+["\']((?:~/|/|\.\.?/)[^"\']+)["\']', text, re.I)
+    if quoted:
+        return quoted.group(1)
+    match = re.search(r'\b(?:en|desde|in|from)\s+["\']?((?:~/|/|\.\.?/)[^\s,;!?]+)', text, re.I)
+    return match.group(1).rstrip('\'"') if match else '.'
+
+
+def build_git_init(s, text, ctx):
+    path = _git_path_argument(text)
+    if path == '.':
+        name = re.search(
+            r'\b(?:repositorio|repo)(?:\s+git)?\s+(?:(?:nuevo|nueva|local|llamado|llamada|named|called)\s+)*([\w.-]+)',
+            s)
+        if name and name.group(1) not in {'git', 'local'}:
+            path = name.group(1)
+    return _plan(text, _op('development', 'git_init', {'path': path}, Risk.MODERATE,
+                           f'inicializar un repositorio Git en {path}'))
+
+
+def build_git_clone(s, text, ctx):
+    match = re.search(r'(?:https?://|ssh://)[^\s"\'<>]+|git@[^\s"\'<>]+|(?:github|gitlab|bitbucket)\.com/[\w./-]+',
+                      text, re.I)
+    if not match:
+        return _ask(text, 'Indica la URL del repositorio que quieres clonar.')
+    url = match.group(0).rstrip('.,;!?)]}')
+    if re.match(r'(?:github|gitlab|bitbucket)\.com/', url, re.I):
+        url = 'https://' + url
+    arguments = {'url': url}
+    destination = re.search(
+        r'\b(?:en|a|to)\s+(?:"((?:~/|/|\.\.?/)[^"]+)"|\'((?:~/|/|\.\.?/)[^\']+)\'|((?:~/|/|\.\.?/)[^\s,;!?]+))',
+        text, re.I)
+    if destination:
+        arguments['destination'] = next(value for value in destination.groups() if value)
+    return _plan(text, _op('development', 'git_clone', arguments, Risk.MODERATE,
+                           f'clonar {url}'))
+
+
+def build_git_add(s, text, ctx):
+    path = _git_path_argument(text)
+    files = None
+    match = re.search(r'\bgit\s+add\s+(.+)$', text, re.I)
+    if match:
+        value = match.group(1).strip().rstrip('.,;!?')
+        value = re.split(r'\s+\b(?:en|desde|in|from)\s+(?=["\']?(?:~/|/|\.\.?/))', value, maxsplit=1, flags=re.I)[0]
+        quoted = re.fullmatch(r'(["\'])(.+)\1', value)
+        files = [quoted.group(2)] if quoted else (shlex.split(value) if value else None)
+    args = {'path': path}
+    if files:
+        args['files'] = files
+    return _plan(text, _op('development', 'git_add', args, Risk.MODERATE,
+                           'preparar cambios para un commit'))
+
+
+def build_git_commit(s, text, ctx):
+    message = re.search(r'\bgit\s+commit\s+(?:-m\s+)?(["\'])(.*?)\1', text, re.I)
+    if not message:
+        message = re.search(r'\b(?:mensaje|message)\s*[:=]?\s*(["\'])(.*?)\1', text, re.I)
+    if message:
+        commit_message = message.group(2).strip()
+    else:
+        unquoted = re.search(r'\bgit\s+commit\s+-m\s+(.+?)(?:\s+\b(?:en|desde)\s+(?:~/|/|\.\.?/).*)?$', text, re.I)
+        if not unquoted:
+            unquoted = re.search(r'\b(?:con\s+)?(?:mensaje|message)\s*[:=]?\s*(.+?)(?:\s+\b(?:en|desde)\s+(?:~/|/|\.\.?/).*)?$', text, re.I)
+        commit_message = unquoted.group(1).strip().strip('"\'') if unquoted else ''
+    if not commit_message:
+        return _ask(text, '¿Qué mensaje quieres usar para el commit?')
+    return _plan(text, _op('development', 'git_commit',
+                           {'path': _git_path_argument(text), 'message': commit_message},
+                           Risk.MODERATE, 'crear un commit con el mensaje indicado'))
+
+
+def build_git_remote(s, text, ctx, action):
+    args = {'path': _git_path_argument(text)}
+    remote = re.search(r'\b(?:origin|upstream)\b(?:\s+([\w./-]+))?', s)
+    if remote:
+        args['remote'] = remote.group(0).split()[0]
+        if remote.group(1):
+            args['branch'] = remote.group(1)
+    return _plan(text, _op('development', f'git_{action}', args, Risk.HIGH,
+                           f'{action} de cambios Git'))
+
+
+def build_git_branch_action(s, text, ctx, action):
+    branch = re.search(rf'\bgit\s+{action}\s+([\w./-]+)', s)
+    if not branch:
+        return _ask(text, 'Indica la rama que quieres usar.')
+    return _plan(text, _op('development', f'git_{action}', {
+        'path': _git_path_argument(text), 'branch': branch.group(1)}, Risk.HIGH,
+        f'{action} de la rama {branch.group(1)}'))
 
 
 def build_docker_build(s, text, ctx):
@@ -1431,9 +1525,9 @@ EARLY_RULES = [
        build_fastfetch,
        [('ejecuta fastfetch', 'development.execute_command'),
         ('ejecuta fastfetch para mostrar información de mi sistema', 'development.execute_command')]),
-    _B('code_search', r'\b(?:codigo|code|fragmento|ejemplo(?:s)?)\b.*\b(?:python|javascript|typescript|java|c\+\+|cpp|rust|go|ruby|php|bash|shell|json|github|stack\s+overflow|stackoverflow)\b',
+    _B('code_search', r'\b(?:codigo|code|fragmento|ejemplo(?:s)?)\b.*\b(?:github|stack\s+overflow|stackoverflow)\b',
        build_code_search,
-       [('dame un ejemplo de codigo python para leer json', 'stack_exchange.search_code_examples'),
+       [('busca un ejemplo de codigo python para leer json en stack overflow', 'stack_exchange.search_code_examples'),
         ('busca un ejemplo de codigo python en github', 'github.search_code')]),
     # --- GitHub integration (before site_search to avoid web search fallback)
     _B('github_search', r'\b(?:busca\w*|busca|buscar|search|encuentra)\s+(?:en\s+)?github\s+(.+?)(?:\s+(?:en\s+)?(?:python|javascript|go|rust|java|typescript|cpp|c\+\+|ruby|php|swift|kotlin))?\s*$', build_github_search,
@@ -1574,6 +1668,29 @@ NEW_RULES = [
     _R('services_running', r'\b(?:servicios (?:activos|corriendo|en ejecucion|funcionando)|lista de servicios|que servicios (?:hay|estan)|list services)\b', 'services', 'list', ['servicios activos', 'lista de servicios']),
     _R('services_timers', r'\b(?:temporizadores|systemd timers|timers del sistema|tareas programadas del sistema|list timers)\b', 'services', 'list_timers', ['timers del sistema']),
     # --- git operations
+    _B('git_clone', r'\b(?:git\s+clone|clona\w*|clonar|clone)\b', build_git_clone,
+       [('clona https://github.com/owner/project.git', 'development.git_clone'),
+        ('git clone git@github.com:owner/project.git', 'development.git_clone')]),
+    _B('git_init', r'\b(?:git\s+init|(?:crea|crear|inicializa|inicializar|inicia|iniciar)\w*\s+(?:un\s+)?(?:nuevo\s+)?(?:repositorio|repo)(?:\s+git)?)\b',
+       build_git_init, [('git init', 'development.git_init'), ('crea un repositorio git llamado demo', 'development.git_init')]),
+    _B('git_add', r'\b(?:git\s+add|prepara(?:r)?\s+(?:los\s+)?cambios(?:\s+de\s+git)?|agrega(?:r)?\s+(?:todos\s+)?(?:los\s+)?cambios\s+(?:a\s+)?git)\b',
+       build_git_add, [('git add .', 'development.git_add'), ('prepara los cambios para git', 'development.git_add')]),
+    _B('git_commit', r'\b(?:git\s+commit|haz(?:me)?\s+(?:un\s+)?commit|crea\w*\s+un\s+commit|commit\s+con\s+mensaje)\b',
+       build_git_commit, [('haz un commit con mensaje "initial commit"', 'development.git_commit'),
+                          ('git commit -m "fix bug"', 'development.git_commit')]),
+    _B('git_pull', r'\b(?:git\s+pull|pull(?:\s+de\s+git)?|jala(?:r)?\s+(?:los\s+)?cambios|trae(?:r)?\s+(?:los\s+)?cambios\s+del\s+repositorio)\b',
+       lambda s, text, ctx: build_git_remote(s, text, ctx, 'pull'),
+       [('git pull', 'development.git_pull'), ('jala los cambios del repositorio', 'development.git_pull')]),
+    _B('git_push', r'\b(?:git\s+push|push(?:\s+de\s+git)?|sube(?:r)?\s+(?:los\s+)?cambios(?:\s+al\s+remoto)?)\b',
+       lambda s, text, ctx: build_git_remote(s, text, ctx, 'push'),
+       [('git push', 'development.git_push'), ('sube los cambios al remoto', 'development.git_push')]),
+    _B('git_merge', r'\bgit\s+merge\b', lambda s, text, ctx: build_git_branch_action(s, text, ctx, 'merge'),
+       [('git merge feature', 'development.git_merge')]),
+    _B('git_rebase', r'\bgit\s+rebase\b', lambda s, text, ctx: build_git_branch_action(s, text, ctx, 'rebase'),
+       [('git rebase main', 'development.git_rebase')]),
+    _R('git_stash', r'\b(?:git stash|guarda los cambios temporalmente en git)\b', 'development', 'git_stash',
+       ['git stash', 'guarda los cambios temporalmente en git'], 'guardar cambios temporalmente', Risk.MODERATE,
+       {'path': '.'}),
     _R('git_status', r'\b(?:estado de git|muestra el estado de git|git status|estado del repositorio)\b', 'development', 'git_status', ['muestra el estado de git', 'git status']),
     _R('git_branch', r'\b(?:en que rama estoy|que rama es esta|git branch|rama actual|rama de git)\b', 'development', 'git_branch', ['en que rama estoy', 'git branch']),
     _R('git_log', r'\b(?:ultimos commits|muestra los ultimos commits|git log|historial de commits|commits recientes)\b', 'development', 'git_log', ['muestra los ultimos commits', 'git log']),

@@ -1,5 +1,7 @@
 """Explicit local development helpers."""
 import subprocess, shutil, sys, os, shlex, re, unicodedata
+from pathlib import Path
+from urllib.parse import urlparse
 
 READ_ONLY_COMMANDS = frozenset({
     'date', 'df', 'fastfetch', 'free', 'hostname', 'id', 'lsb_release',
@@ -34,11 +36,69 @@ def run_python(path,args=(),timeout=60):
     if isinstance(args,str):args=shlex.split(args)
     p=subprocess.run([sys.executable,path,*args],capture_output=True,text=True,timeout=timeout,shell=False)
     return {'exit_code':p.returncode,'stdout':p.stdout[:100000],'stderr':p.stderr[:100000]}
-def clone(url,destination):
-    if not shutil.which('git'):raise FileNotFoundError('git is not installed')
-    p=subprocess.run(['git','clone','--',url,destination],capture_output=True,text=True,timeout=300)
-    if p.returncode:raise RuntimeError(p.stderr.strip())
-    return destination
+def _git_path(path):
+    resolved = Path(path).expanduser().resolve()
+    protected = (Path('/etc'), Path('/usr'), Path('/boot'), Path('/dev'),
+                 Path('/proc'), Path('/sys'), Path('/root'))
+    sensitive = tuple(Path.home() / name for name in ('.ssh', '.gnupg', '.aws'))
+    if resolved == Path('/') or any(resolved == root or root in resolved.parents
+                                    for root in (*protected, *sensitive)):
+        raise ValueError(f'Git no puede modificar una ruta protegida: {resolved}')
+    return str(resolved)
+
+
+def _git_available():
+    if not shutil.which('git'):
+        raise FileNotFoundError('git is not installed')
+
+
+def _checked_git_result(result):
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip()
+                           or f'Git terminó con código {result.returncode}')
+    return result
+
+
+def git_init(path='.', initial_branch=None):
+    """Create a local Git repository at an existing or new directory."""
+    _git_available()
+    destination = _git_path(path)
+    if initial_branch and not re.fullmatch(r'[\w./-]+', initial_branch):
+        raise ValueError('Invalid initial branch name')
+    cmd = ['git', 'init']
+    if initial_branch:
+        cmd.extend(['--initial-branch', initial_branch])
+    cmd.append(destination)
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    return {'path': destination, 'branch': initial_branch, 'output': result.stdout.strip(),
+            'success': True}
+
+
+def clone(url, destination=None):
+    """Clone a remote Git repository without invoking a shell."""
+    _git_available()
+    url = str(url).strip()
+    is_ssh_alias = re.fullmatch(r'git@[A-Za-z0-9.-]+:[\w./-]+', url)
+    parsed = urlparse(url)
+    if not is_ssh_alias and (parsed.scheme not in {'http', 'https', 'ssh'} or not parsed.netloc):
+        raise ValueError('Usa una URL Git http(s), ssh o git@host:ruta.')
+    if parsed.password or (parsed.username and parsed.scheme != 'ssh'):
+        raise ValueError('No incluyas credenciales en la URL; configura un credential helper de Git.')
+    if not destination:
+        remote_path = parsed.path if parsed.path else (url.split(':', 1)[1] if is_ssh_alias else '')
+        repo_name = remote_path.rstrip('/').rsplit('/', 1)[-1]
+        repo_name = repo_name.removesuffix('.git')
+        if not repo_name:
+            raise ValueError('La URL debe identificar un repositorio.')
+        destination = repo_name
+    target = _git_path(destination)
+    cmd = ['git', 'clone', '--', url, target]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip())
+    return {'url': url, 'path': target, 'output': result.stdout.strip(), 'success': True}
 
 def execute_command(command,timeout=30):
     """Run explicitly requested argv/pipeline; never pass text to a shell."""
@@ -233,8 +293,8 @@ def git_branch(path='.'):
     if not shutil.which('git'):
         raise FileNotFoundError('git is not installed')
     
-    result = subprocess.run(['git', '-C', path, 'branch', '-a'], 
-                          capture_output=True, text=True, timeout=10)
+    result = _checked_git_result(subprocess.run(
+        ['git', '-C', path, 'branch', '-a'], capture_output=True, text=True, timeout=10))
     
     branches = []
     current = None
@@ -256,7 +316,7 @@ def git_diff(path='.', file=None):
     if file:
         cmd.append(file)
     
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    result = _checked_git_result(subprocess.run(cmd, capture_output=True, text=True, timeout=10))
     
     return {'path': path, 'file': file, 'diff': result.stdout}
 
@@ -266,7 +326,7 @@ def git_log(path='.', limit=10):
         raise FileNotFoundError('git is not installed')
     
     cmd = ['git', '-C', path, 'log', f'-{limit}', '--oneline', '--decorate']
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    result = _checked_git_result(subprocess.run(cmd, capture_output=True, text=True, timeout=10))
     
     commits = []
     for line in result.stdout.splitlines():
@@ -281,8 +341,8 @@ def git_stash(path='.'):
     if not shutil.which('git'):
         raise FileNotFoundError('git is not installed')
     
-    result = subprocess.run(['git', '-C', path, 'stash'], 
-                          capture_output=True, text=True, timeout=10)
+    result = _checked_git_result(subprocess.run(
+        ['git', '-C', path, 'stash'], capture_output=True, text=True, timeout=10))
     
     return {'path': path, 'output': result.stdout, 'success': result.returncode == 0}
 
@@ -291,8 +351,8 @@ def git_checkout(path, branch_or_commit):
     if not shutil.which('git'):
         raise FileNotFoundError('git is not installed')
     
-    result = subprocess.run(['git', '-C', path, 'checkout', branch_or_commit], 
-                          capture_output=True, text=True, timeout=10)
+    result = _checked_git_result(subprocess.run(
+        ['git', '-C', path, 'checkout', branch_or_commit], capture_output=True, text=True, timeout=10))
     
     return {
         'path': path,
@@ -383,13 +443,16 @@ def git_add(path, files=None):
     if files:
         if isinstance(files, str):
             files = [files]
-        cmd.extend(files)
+        options = [item for item in files if item in {'-A', '--all', '-u', '--update'}]
+        paths = [item for item in files if item not in {'-A', '--all', '-u', '--update'}]
+        cmd.extend(options)
+        if paths:
+            cmd.extend(['--', *paths])
     else:
         cmd.append('.')
     
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-    
-    return {'path': path, 'files': files, 'success': result.returncode == 0}
+    result = _checked_git_result(subprocess.run(cmd, capture_output=True, text=True, timeout=10))
+    return {'path': path, 'files': files, 'output': result.stdout, 'success': True}
 
 
 def git_commit(path, message):
@@ -397,15 +460,14 @@ def git_commit(path, message):
     if not shutil.which('git'):
         raise FileNotFoundError('git is not installed')
     
-    result = subprocess.run(['git', '-C', path, 'commit', '-m', message],
-                          capture_output=True, text=True, timeout=10)
+    result = _checked_git_result(subprocess.run(
+        ['git', '-C', path, 'commit', '-m', message], capture_output=True, text=True, timeout=10))
     
     return {
         'path': path,
         'message': message,
-        'exit_code': result.returncode,
         'output': result.stdout,
-        'success': result.returncode == 0
+        'success': True
     }
 
 
@@ -418,15 +480,14 @@ def git_push(path, remote='origin', branch=None):
     if branch:
         cmd.append(branch)
     
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = _checked_git_result(subprocess.run(cmd, capture_output=True, text=True, timeout=120))
     
     return {
         'path': path,
         'remote': remote,
         'branch': branch,
-        'exit_code': result.returncode,
         'output': result.stdout,
-        'error': result.stderr
+        'success': True
     }
 
 
@@ -439,15 +500,14 @@ def git_pull(path, remote='origin', branch=None):
     if branch:
         cmd.append(branch)
     
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    result = _checked_git_result(subprocess.run(cmd, capture_output=True, text=True, timeout=120))
     
     return {
         'path': path,
         'remote': remote,
         'branch': branch,
-        'exit_code': result.returncode,
         'output': result.stdout,
-        'error': result.stderr
+        'success': True
     }
 
 
@@ -456,16 +516,14 @@ def git_merge(path, branch):
     if not shutil.which('git'):
         raise FileNotFoundError('git is not installed')
     
-    result = subprocess.run(['git', '-C', path, 'merge', branch],
-                          capture_output=True, text=True, timeout=30)
+    result = _checked_git_result(subprocess.run(
+        ['git', '-C', path, 'merge', branch], capture_output=True, text=True, timeout=30))
     
     return {
         'path': path,
         'branch': branch,
-        'exit_code': result.returncode,
         'output': result.stdout,
-        'error': result.stderr,
-        'success': result.returncode == 0
+        'success': True
     }
 
 
@@ -474,16 +532,14 @@ def git_rebase(path, branch):
     if not shutil.which('git'):
         raise FileNotFoundError('git is not installed')
     
-    result = subprocess.run(['git', '-C', path, 'rebase', branch],
-                          capture_output=True, text=True, timeout=60)
+    result = _checked_git_result(subprocess.run(
+        ['git', '-C', path, 'rebase', branch], capture_output=True, text=True, timeout=60))
     
     return {
         'path': path,
         'branch': branch,
-        'exit_code': result.returncode,
         'output': result.stdout,
-        'error': result.stderr,
-        'success': result.returncode == 0
+        'success': True
     }
 
 
