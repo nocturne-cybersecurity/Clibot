@@ -10,6 +10,10 @@ LLMAH needs no model for local system operations. If a local Ollama server and a
 
 In the interactive CLI, `/models` lists installed models and opens Ollama's online catalog. Choose a result and variant to download it; type `buscar <texto>` to filter the catalog. `/models search <texto>` displays matching results, `/models pull <name[:tag]>` downloads directly, and `/models use <name>` switches to an installed model. The online catalog requires Internet; when unavailable, installed-model management and direct pulls still work if the local Ollama server is reachable.
 
+## Optional microphone input
+
+In the interactive terminal, `/micro on` enables Spanish dictation; each recognized phrase is passed through the same assistant parser and confirmation flow as typed text. Type `/micro off`, say “micro off,” or press Ctrl+C to turn listening off. Audio is captured from the ALSA default device and processed locally by Vosk; it is not saved or sent to a network service. Install `pip install -e '.[voice]'` and the system package `alsa-utils`, then download and extract `vosk-model-small-es-0.42` into `~/.cache/clibot/vosk-model-small-es-0.42`. To use another model directory, set `CLIBOT_VOSK_MODEL`. Model files are not downloaded automatically.
+
 Requests to create or explain code are routed to the configured model when available; the assistant does not silently substitute a built-in code template. Explicit requests to find existing examples on Stack Overflow or GitHub use their respective integrations and retain attribution. A plain request for an example does not trigger an external search unless a source is named.
 
 OpenAI-compatible services are opt-in through `CLIBOT_LLM_PROVIDER=openai` plus `LLM_API_KEY`, or through `CLIBOT_LLM_PROVIDER=openai_compatible`, `CLIBOT_LLM_BASE_URL`, and `LLM_API_KEY`. Those services receive unrecognized requests and a short redacted recent-context summary. Keep credentials in environment variables rather than tracked project files. Model-generated operations still require the ordinary capability schemas and risk checks.

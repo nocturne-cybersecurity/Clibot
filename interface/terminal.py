@@ -22,6 +22,7 @@ import json
 import os
 import random
 import re
+import select
 import subprocess
 import sys
 import tempfile
@@ -100,6 +101,10 @@ COMMANDS = [
     ('/paginate', '', 'Alternar paginación'),
     ('/model', '[on|off]', 'Activar o desactivar el modelo'),
     ('/models', '[search <texto>|use|pull]', 'Explorar, buscar, cambiar o descargar modelos Ollama'),
+    ('/micro', '[on|off]', 'Activar o desactivar comandos por voz'),
+    ('/mic', '[list|use]', 'Listar o cambiar modelo de reconocimiento de voz'),
+    ('/voice', '[on|off|list|use]', 'Activar/desactivar respuesta de voz o cambiar voz'),
+    ('/keys', '[list|set|clear <servicio>]', 'Gestionar API keys (OpenAI, GitHub, etc.)'),
     ('/token', '[set|status|clear]', 'Configurar token de GitHub sin mostrarlo'),
     ('/run', '<cmd>', 'Ejecutar un comando'),
     ('/cd', '<dir>', 'Cambiar de directorio'),
@@ -141,6 +146,7 @@ EXAMPLES = [
 
 TIPS = [
     'Escribe / para ver todos los comandos con su descripción.',
+    'Con /micro on puedes dictar comandos; /micro off devuelve el control al teclado.',
     'Empieza una línea con ! para ejecutar un comando de shell directamente.',
     'Alt+Enter inserta una nueva línea sin enviar el mensaje.',
     '/export guarda la sesión completa en un archivo Markdown.',
@@ -293,11 +299,35 @@ class Terminal:
             '/history': self._cmd_history, '/forget': self._cmd_forget, '/reset': self._cmd_reset,
             '/clear': self._cmd_clear, '/json': self._cmd_json, '/yaml': self._cmd_yaml,
             '/silent': self._cmd_silent, '/verbose': self._cmd_verbose, '/paginate': self._cmd_paginate,
-            '/model': self._cmd_model, '/models': self._cmd_models, '/token': self._cmd_token,
+            '/model': self._cmd_model, '/models': self._cmd_models, '/micro': self._cmd_micro,
+            '/mic': self._cmd_mic, '/voice': self._cmd_voice, '/keys': self._cmd_keys,
+            '/token': self._cmd_token,
             '/run': self._cmd_run, '/cd': self._cmd_cd,
             '/export': self._cmd_export, '/exit': lambda _a: 'exit',
         }
+        self._micro_enabled = False
+        self._voice_input = None
         self._setup_input()
+        
+        # Initialize TTS and keys managers
+        from intelligence.tts_manager import TTSManager
+        from intelligence.keys_manager import KeysManager
+        from intelligence.voice_setup import VoiceSetup
+        self._tts = TTSManager()
+        self._keys = KeysManager()
+        
+        # Auto-enable microphone if voice was installed and marked for auto-enable
+        voice_setup = VoiceSetup()
+        voice_config = voice_setup.load_config()
+        if voice_config.get('auto_enable', False) and voice_config.get('installed', False):
+            try:
+                from interface.voice import VoiceInput
+                voice = VoiceInput()
+                voice.prepare()
+                self._voice_input = voice
+                self._micro_enabled = True
+            except Exception:
+                pass  # If it fails, just continue without microphone
 
     # ── entrada ──
     def _setup_input(self):
@@ -362,12 +392,47 @@ class Terminal:
             readline.parse_and_bind('tab: complete')
 
     def _read(self):
+        if self._micro_enabled:
+            return self._read_micro()
         if self._session:
             return self._session.prompt()
         line = input(f'{self._get_prompt_path()} ❯ ')
         while line.endswith('\\'):
             line = line[:-1] + '\n' + input('… ')
         return line
+
+    def _read_micro(self):
+        from interface.voice import VoiceInputError, voice_command
+
+        try:
+            self._voice_input.start()
+        except VoiceInputError as exc:
+            self._micro_enabled = False
+            self.console.print(Text(f'  No se pudo iniciar el micrófono: {exc}', style=ERR))
+            return ''
+        prompt = f'\n{self._get_prompt_path()}  [MIC] ❯ '
+        self.console.print(Text(prompt, style=f'bold {ACCENT}'), end='')
+        try:
+            while True:
+                event = self._voice_input.poll()
+                if event:
+                    self._voice_input.stop()
+                    if event[0] == 'error':
+                        self._micro_enabled = False
+                        self.console.print(Text(f'\n  Error del micrófono: {event[1]}', style=ERR))
+                        return ''
+                    transcript = event[1]
+                    self.console.print(Text(f'\n  Oí: {transcript}', style=DIM))
+                    return voice_command(transcript)
+                ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                if ready:
+                    line = sys.stdin.readline()
+                    self._voice_input.stop()
+                    if line == '':
+                        raise EOFError
+                    return line
+        finally:
+            self._voice_input.stop()
 
     # ── estado cacheado (la barra se redibuja con cada tecla) ──
     def _model_info(self):
@@ -445,6 +510,11 @@ class Terminal:
                 self._bye()
                 break
             except KeyboardInterrupt:
+                if self._micro_enabled:
+                    self._micro_enabled = False
+                    if self._voice_input:
+                        self._voice_input.stop()
+                    self.console.print(Text('\n  Micrófono desactivado.', style=WARN))
                 now = time.monotonic()
                 if now - self._last_sigint < 2:
                     self._bye()
@@ -542,8 +612,34 @@ class Terminal:
             if isinstance(response, dict) and response.get('error'):
                 self.console.print(Text.assemble(('Error: ', ERR), str(response['error'])))
         else:
-            self._emit(format_response(response))
+            formatted = format_response(response)
+            self._emit(formatted)
             self.console.print(Text(f'  ✓ {elapsed:.1f}s', style=DIM))
+            
+            # Speak response if TTS is enabled
+            if self._tts.is_available():
+                tts_config = self._tts.load_config()
+                if tts_config.get('enabled', False):
+                    text_to_speak = self._extract_text_for_speech(response)
+                    if text_to_speak:
+                        self._tts.speak(text_to_speak)
+
+    def _extract_text_for_speech(self, response):
+        """Extract readable text from response for TTS."""
+        if isinstance(response, dict):
+            # Extract message or summary
+            if 'message' in response:
+                return str(response['message'])
+            if 'summary' in response:
+                return str(response['summary'])
+            if 'results' in response:
+                results = response['results']
+                if results and len(results) > 0:
+                    first_result = results[0]
+                    if hasattr(first_result, 'stdout') and first_result.stdout:
+                        return str(first_result.stdout)[:500]  # Limit length
+            return str(response)
+        return str(response)[:500]  # Limit length for TTS
 
     def _gutter(self, text, bullet='●'):
         grid = Table.grid(padding=(0, 1), expand=True)
@@ -656,7 +752,10 @@ class Terminal:
         self.console.print(cmds)
         self.console.print(keys)
         self.console.print(ex)
-        self.console.print(Text('  /token set guarda GitHub Token localmente; /models explora el catálogo de Ollama.', style=DIM))
+        self.console.print(Text('  /keys gestiona API keys (OpenAI, GitHub, Stack Exchange, etc.).', style=DIM))
+        self.console.print(Text('  /voice on activa respuesta de voz; /voice list muestra perfiles disponibles.', style=DIM))
+        self.console.print(Text('  /mic list muestra modelos de reconocimiento de voz disponibles.', style=DIM))
+        self.console.print(Text('  /micro on activa dictado local en español; di «micro off» o escribe /micro off para detenerlo.', style=DIM))
         self.console.print(Text('  ⚠ Las acciones importantes piden confirmación.', style=WARN))
 
     def _cmd_caps(self, _a):
@@ -677,6 +776,9 @@ class Terminal:
         ok, label = self._model_info()
         t = self._table('Estado')
         t.add_row('Modelo', Text(f'● {label}', style=OK if ok else ERR))
+        t.add_row('Micrófono', self._flag(self._micro_enabled))
+        tts_status = self._tts.get_status()
+        t.add_row('Respuesta voz', self._flag(tts_status['enabled']))
         t.add_row('Capacidades', f'{len(self.assistant.capabilities())} grupos')
         t.add_row('JSON', self._flag(self.json_mode))
         t.add_row('YAML', self._flag(self.yaml_mode))
@@ -685,6 +787,150 @@ class Terminal:
         t.add_row('Solicitudes', str(self._requests))
         t.add_row('Sesión', f'{int((time.monotonic() - self._started) // 60)} min')
         self.console.print(t)
+
+    def _cmd_micro(self, arg):
+        action = arg.strip().casefold()
+        if action in {'on', 'encender', 'activar'}:
+            if not sys.stdin.isatty():
+                self.console.print(Text('  El modo de micrófono requiere una terminal interactiva.', style=WARN))
+                return
+            from interface.voice import VoiceInput, VoiceInputError
+
+            try:
+                voice = VoiceInput()
+                voice.prepare()
+            except VoiceInputError as exc:
+                self.console.print(Text(f'  No se pudo activar el micrófono: {exc}', style=ERR))
+                return
+            self._voice_input = voice
+            self._micro_enabled = True
+            self.console.print(Text(
+                '  Micrófono activado. Habla una instrucción o escribe /micro off para volver al teclado; '
+                'Ctrl+C también lo desactiva.', style=OK))
+            return
+        if action in {'off', 'apagar', 'desactivar'}:
+            self._micro_enabled = False
+            if self._voice_input:
+                self._voice_input.stop()
+            self.console.print(Text('  Micrófono desactivado.', style=DIM))
+            return
+        if action in {'status', 'estado'}:
+            self.console.print(Text(
+                f'  Micrófono {"activado" if self._micro_enabled else "desactivado"}.', style=DIM))
+            return
+        self.console.print(Text('  Uso: /micro on | /micro off | /micro status', style=DIM))
+
+    def _cmd_mic(self, arg):
+        """Manage voice recognition models (similar to /models)."""
+        action = arg.strip().casefold()
+        
+        if action == 'list':
+            # List available Vosk models
+            self.console.print(Text('  Modelos de reconocimiento de voz disponibles:', style=ACCENT))
+            self.console.print(Text('  - vosk-model-small-es-0.42 (español, ~50 MB)', style=DIM))
+            self.console.print(Text('  Para descargar otros modelos, visita: https://alphacephei.com/vosk/models', style=DIM))
+            return
+        
+        if action.startswith('use '):
+            model = action[4:].strip()
+            if not model:
+                self.console.print(Text('  Uso: /mic use <modelo>', style=DIM))
+                return
+            
+            # Set model via environment variable
+            import os
+            os.environ['CLIBOT_VOSK_MODEL'] = model
+            self.console.print(Text(f'  Modelo de voz cambiado a: {model}', style=OK))
+            self.console.print(Text('  Reinicia /micro on para aplicar el cambio.', style=DIM))
+            return
+        
+        self.console.print(Text('  Uso: /mic list | /mic use <modelo>', style=DIM))
+
+    def _cmd_voice(self, arg):
+        """Manage text-to-speech."""
+        action = arg.strip().casefold()
+        
+        if action in {'on', 'encender', 'activar'}:
+            if not self._tts.is_available():
+                self.console.print(Text('  TTS no disponible. Instala con: pip install -e ".[tts]"', style=ERR))
+                return
+            self._tts.set_enabled(True)
+            self.console.print(Text('  Respuesta de voz activada.', style=OK))
+            return
+        
+        if action in {'off', 'apagar', 'desactivar'}:
+            self._tts.set_enabled(False)
+            self.console.print(Text('  Respuesta de voz desactivada.', style=DIM))
+            return
+        
+        if action == 'list':
+            voices = self._tts.list_voices()
+            self.console.print(Text('  Perfiles de voz disponibles:', style=ACCENT))
+            for profile, desc in voices.items():
+                self.console.print(Text(f'  - {profile}: {desc}', style=DIM))
+            return
+        
+        if action.startswith('use '):
+            profile = action[4:].strip()
+            success, msg = self._tts.set_voice_profile(profile)
+            if success:
+                self.console.print(Text(f'  {msg}', style=OK))
+            else:
+                self.console.print(Text(f'  {msg}', style=ERR))
+            return
+        
+        if action == 'status':
+            status = self._tts.get_status()
+            self.console.print(Text('  Estado de respuesta de voz:', style=ACCENT))
+            self.console.print(Text(f'  Disponible: {"Sí" if status["available"] else "No"}', style=DIM))
+            self.console.print(Text(f'  Activado: {"Sí" if status["enabled"] else "No"}', style=DIM))
+            self.console.print(Text(f'  Voz actual: {status["voice_name"]}', style=DIM))
+            self.console.print(Text(f'  Velocidad: {status["rate"]} palabras/min', style=DIM))
+            self.console.print(Text(f'  Volumen: {status["volume"]}', style=DIM))
+            return
+        
+        self.console.print(Text('  Uso: /voice on | /voice off | /voice list | /voice use <perfil> | /voice status', style=DIM))
+
+    def _cmd_keys(self, arg):
+        """Manage API keys."""
+        parts = arg.strip().split()
+        if not parts:
+            self._keys.interactive_list()
+            return
+        
+        action = parts[0].casefold()
+        
+        if action == 'list':
+            self._keys.interactive_list()
+            return
+        
+        if action == 'set':
+            if len(parts) < 2:
+                self.console.print(Text('  Uso: /keys set <servicio>', style=DIM))
+                self.console.print(Text('  Servicios: ' + ', '.join(self._keys.SUPPORTED_KEYS.keys()), style=DIM))
+                return
+            service = parts[1].casefold()
+            success, msg = self._keys.interactive_set(service)
+            if success:
+                self.console.print(Text(f'  {msg}', style=OK))
+            else:
+                self.console.print(Text(f'  {msg}', style=ERR))
+            return
+        
+        if action == 'clear':
+            if len(parts) < 2:
+                self.console.print(Text('  Uso: /keys clear <servicio>', style=DIM))
+                return
+            service = parts[1].casefold()
+            success, msg = self._keys.interactive_clear(service)
+            if success:
+                self.console.print(Text(f'  {msg}', style=OK))
+            else:
+                self.console.print(Text(f'  {msg}', style=ERR))
+            return
+        
+        self.console.print(Text('  Uso: /keys list | /keys set <servicio> | /keys clear <servicio>', style=DIM))
+        self.console.print(Text('  Servicios: ' + ', '.join(self._keys.SUPPORTED_KEYS.keys()), style=DIM))
 
     def _cmd_history(self, _a):
         events = getattr(self.assistant.context, 'events', [])

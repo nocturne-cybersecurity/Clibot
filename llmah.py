@@ -3,7 +3,8 @@ import argparse, sys
 from core.assistant import Assistant
 from interface.terminal import Terminal
 from interface.formatter import format_response
-from intelligence.ollama_setup import check_and_prompt
+from intelligence.ollama_setup import check_and_prompt as check_ollama
+from intelligence.voice_setup import check_and_prompt as check_voice
 VERSION='0.2.0'
 def main(argv=None):
     parser=argparse.ArgumentParser(prog='llmah',description='Asistente local offline para diagnóstico y administración Linux')
@@ -12,8 +13,9 @@ def main(argv=None):
     parser.add_argument('request',nargs='*',help='Solicitud en lenguaje natural (también admite varias palabras sin comillas)')
     args=parser.parse_args(argv)
     try:
-        # Check for LLM setup on first run
-        check_and_prompt()
+        # Check for LLM and voice setup on first run
+        check_ollama()
+        check_voice()
         assistant=Assistant()
         if args.command and args.request:
             parser.error('usa --command o una solicitud posicional, no ambas')

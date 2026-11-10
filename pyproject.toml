@@ -16,6 +16,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 postgres = ["psycopg2-binary>=2.9.0"]
+voice = ["vosk>=0.3.45"]
+tts = ["pyttsx3>=2.90"]
 
 [project.scripts]
 llmah = "llmah:main"
