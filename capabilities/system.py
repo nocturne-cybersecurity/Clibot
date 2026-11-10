@@ -844,7 +844,7 @@ def _walk_budget(path, seconds=20):
 
 
 def disk_hogs(path='.', limit=10):
-    out = _xrun(['du', '-x', '-d1', '-B1M', os.path.expanduser(path)], timeout=90, check=False)
+    out = _xrun(['du', '-x', '-d1', '-B1M', '--', os.path.expanduser(path)], timeout=30, check=False)
     rows = []
     for line in out.splitlines():
         size, _, name = line.partition('\t')

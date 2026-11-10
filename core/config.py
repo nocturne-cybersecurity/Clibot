@@ -18,6 +18,8 @@ def load_config():
     if not isinstance(defaults,list) or any(not isinstance(item,str) or '.' not in item for item in defaults):raise ConfigurationError('execution.default_yes_operations must be a list of capability.operation names')
     if not isinstance(settings.get('terminal',{}).get('animation',True),bool):raise ConfigurationError('terminal.animation must be a boolean')
     research=settings.get('research',{})
-    if not isinstance(research.get('automatic_for_general_questions',True),bool):raise ConfigurationError('research.automatic_for_general_questions must be a boolean')
     if research.get('provider','duckduckgo')!='duckduckgo':raise ConfigurationError('research.provider currently supports only duckduckgo')
+    model=settings.get('model',{})
+    enabled=model.get('enabled','auto') if isinstance(model,dict) else None
+    if not isinstance(model,dict) or (type(enabled) is not bool and enabled!='auto'):raise ConfigurationError('model.enabled must be true, false, or auto')
     return {'settings':settings,'policies':policies,'aliases':aliases}

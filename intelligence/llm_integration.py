@@ -93,21 +93,22 @@ class LLMIntegration:
         except (URLError, TimeoutError, json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise RuntimeError(f'No se pudo obtener respuesta del modelo: {exc}') from exc
 
-    def generate_response(self, prompt, context=None, json_mode=False):
+    def generate_response(self, prompt, context=None, json_mode=False, max_tokens=None):
         if not self.enabled:
             raise RuntimeError('No hay un modelo configurado.')
         # Phi-3 on CPU spends most of its time reading the prompt. A full
         # capability catalog plus unlimited tokens is what stalled replies
         # for minutes. Keep the window and the answer short.
         if self.provider == 'ollama':
+            token_limit=max(1,min(int(max_tokens if max_tokens is not None else (200 if json_mode else 220)),600))
             payload = {
                 'model': self.model,
                 'prompt': prompt,
                 'stream': False,
                 'keep_alive': '10m',
                 'options': {
-                    'num_predict': 160 if json_mode else 64,
-                    'num_ctx': 1024,
+                    'num_predict': token_limit,
+                    'num_ctx': 2048,
                     'temperature': 0 if json_mode else 0.3,
                     'top_k': 20,
                 },
@@ -115,16 +116,17 @@ class LLMIntegration:
             if json_mode:
                 payload['format'] = 'json'
             result = self._post_json(f'{self.base_url}/api/generate', payload,
-                                     {'Content-Type': 'application/json'}, 4)
+                                     {'Content-Type': 'application/json'}, 20)
             return str(result.get('response', '')).strip()
         if self.provider in {'openai', 'openai_compatible'}:
+            token_limit=max(1,min(int(max_tokens if max_tokens is not None else 256),600))
             payload = {
                 'model': self.model,
                 'messages': [
                     {'role': 'system', 'content': 'Eres CLIBOT, asistente técnico. Sé preciso, breve y honesto.'},
                     {'role': 'user', 'content': prompt},
                 ],
-                'max_tokens': 180,
+                'max_tokens': token_limit,
                 'temperature': 0.2,
             }
             if json_mode:

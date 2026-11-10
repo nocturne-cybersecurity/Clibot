@@ -6,9 +6,11 @@ Configuration files use JSON syntax, which is also a strict YAML 1.2 subset; the
 
 ## Optional language model
 
-LLMAH needs no model for normal operations. If a local Ollama server and at least one model are already available, it detects them through the loopback API. To select a specific installed model, set `LLMAH_LLM_PROVIDER=ollama` and `LLMAH_LLM_MODEL` to the exact name shown by `ollama list`. No model is downloaded by LLMAH. The provider adapter uses Python's standard library.
+LLMAH needs no model for local system operations. If a local Ollama server and at least one model are available, it detects them through the loopback API and uses them for open-ended answers and ambiguous requests. To select a specific installed model, set `CLIBOT_LLM_PROVIDER=ollama` and `CLIBOT_LLM_MODEL` to the exact name shown by `ollama list`. `CLIBOT_USE_LLM=false` disables model use for a session. No model is downloaded implicitly. The provider adapter uses Python's standard library.
 
-OpenAI-compatible services are opt-in through `LLMAH_LLM_PROVIDER=openai` plus `LLM_API_KEY`, or through `LLMAH_LLM_PROVIDER=openai_compatible`, `LLMAH_LLM_BASE_URL`, and `LLM_API_KEY`. Those services receive unrecognized requests and a short redacted recent-context summary. Keep credentials in environment variables rather than tracked project files. Model-generated operations still require the ordinary capability schemas and risk checks.
+OpenAI-compatible services are opt-in through `CLIBOT_LLM_PROVIDER=openai` plus `LLM_API_KEY`, or through `CLIBOT_LLM_PROVIDER=openai_compatible`, `CLIBOT_LLM_BASE_URL`, and `LLM_API_KEY`. Those services receive unrecognized requests and a short redacted recent-context summary. Keep credentials in environment variables rather than tracked project files. Model-generated operations still require the ordinary capability schemas and risk checks.
+
+Stack Overflow code examples are fetched from the public Stack Exchange API and rendered with answer attribution and links. GitHub code search uses the authenticated code-search API and requires `GITHUB_TOKEN`; without it, the assistant reports that requirement instead of falling back to an unrelated search.
 
 ## Add a natural-language feature
 

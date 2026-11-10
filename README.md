@@ -191,6 +191,10 @@ clibot --command "muestra la memoria RAM"
 Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 - `/help` o `/capabilities`: Muestra las capacidades y operaciones disponibles.
 - `/status`: Muestra el estado del sistema y del modelo LLM configurado.
+- `/token` o `/token status`: Comprueba si hay token de GitHub sin revelarlo; `/token set` lo solicita oculto y lo guarda con permisos privados, y `/token clear` elimina el token guardado.
+- `/models` o `/models list`: Lista modelos locales de Ollama; `/models use <modelo>` cambia el modelo y `/models pull <modelo>` descarga y selecciona uno.
+- `/model on|off`: Activa o desactiva el LLM durante la sesión.
+- Puedes pedir en lenguaje natural «cierra Chrome», «cierra Spotify» y otras aplicaciones conocidas; CLIBOT muestra qué operación ejecutará y pide confirmación porque podría perderse trabajo sin guardar.
 - `/history`: Muestra el historial de la sesión actual.
 - `/forget`: Limpia la memoria de la sesión actual.
 - `/clear`: Limpia la pantalla de la terminal.
@@ -204,7 +208,7 @@ Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 
 ##  Uso Opcional con Modelo Local (Ollama)
 
-CLIBOT funciona 100% offline sin necesidad de un modelo externo. Sin embargo, si tienes **Ollama** instalado y ejecutándose en tu sistema, puedes activar el razonamiento con IA:
+CLIBOT funciona sin depender de un modelo remoto. Si **Ollama** está ejecutándose con un modelo instalado, lo detecta automáticamente para responder preguntas abiertas y entender peticiones que no coinciden con una regla. Desde la terminal interactiva puedes listar, descargar y seleccionar modelos con `/models`, por ejemplo `/models pull llama3.2` y `/models use llama3.2`. La selección se guarda en `~/.config/clibot/llm.json` (permisos privados); también puedes configurar el modelo con variables de entorno:
 
 ```bash
 export CLIBOT_LLM_PROVIDER=ollama
@@ -223,10 +227,10 @@ clibot
 
 ### Integraciones con APIs externas
 
-CLIBOT incluye integraciones opcionales con GitHub y Stack Exchange:
+Las preguntas abiertas y las solicitudes para generar código usan el modelo activo, sin abrir una búsqueda web ni añadir fuentes no solicitadas. Para investigar en línea, pídelo expresamente (por ejemplo, «busca en la web…»). Si solicitas código de GitHub o Stack Overflow, CLIBOT muestra atribución y enlaces; la búsqueda de código de GitHub requiere un token personal:
 
 ```bash
-# GitHub (opcional, para mayor límite de tasa)
+# GitHub (configúralo de forma oculta desde /token set o usa la variable de entorno)
 export GITHUB_TOKEN=your_github_token
 
 # Stack Exchange (opcional, para mayor límite de tasa)

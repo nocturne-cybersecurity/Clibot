@@ -8,6 +8,10 @@ _SEARCH = re.compile(r'\b' + _VERB + r'\b', re.I)
 
 def _handler(text, context=None):
     normalized = text.strip()
+    if (re.search(r'(?i)\b(?:codigo|code|fragmento|ejemplo(?:s)?)\b.*'
+                  r'\b(?:python|javascript|typescript|java|c\+\+|cpp|rust|go|ruby|php|bash|shell|json|github|stack\s+overflow|stackoverflow)\b',
+                  normalized)):
+        return None
     # A request to find a local file belongs to the filesystem capability, not
     # to the web-search intent. Returning None lets the main parser handle it.
     if (re.search(r'(?i)\b(?:archivo|archivos|fichero|ficheros|file|files|carpeta|directorio)\b', normalized)

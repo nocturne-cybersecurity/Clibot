@@ -12,7 +12,6 @@ from core.error_handler import handle_error
 from core.audit_logger import AuditLogger
 from intelligence.dialogue import respond as dialogue_response
 from intelligence.llm_integration import LLMIntegration
-from core.agent_cycle import AgentCycle
 
 class Assistant:
     def __init__(self,confirm=input):
@@ -20,13 +19,13 @@ class Assistant:
         self.config=load_config(); self.registry=registry; self.parser=Parser(); self.validator=Validator(registry); self.context=Context(); self.auto_open_terminal=False; self._input_confirm=confirm
         self.executor=Executor(registry,self._confirm,self.config['settings'].get('execution',{}).get('default_yes_operations',()),
                                self.config['policies'].get('risk',{}))
-        # Only enable LLM if explicitly requested via environment variable CLIBOT_USE_LLM=true
-        use_llm = os.environ.get('CLIBOT_USE_LLM', 'false').lower() == 'true'
-        self.llm = LLMIntegration() if use_llm else None
-        self.llm_timeout = 0.15  # 150ms timeout for LLM responses
+        # Detect a local Ollama model automatically; remote providers still need
+        # explicit configuration inside LLMIntegration.
+        configured_llm=self.config['settings'].get('model',{}).get('enabled','auto')
+        use_llm = os.environ.get('CLIBOT_USE_LLM',str(configured_llm)).strip().lower()
+        self.llm = None if use_llm in {'false', '0', 'off', 'no'} else LLMIntegration()
+        self.llm_timeout = 20.0
         self.audit_logger = AuditLogger()
-        # Initialize agent cycle for enhanced reasoning
-        self.agent_cycle = AgentCycle(llm=self.llm) if self.llm else None
     def _confirm(self,prompt):
         if self.auto_open_terminal and prompt.startswith('Confirm abrir una terminal (moderate)?'):return 'yes'
         return self._input_confirm(prompt)
@@ -48,42 +47,32 @@ class Assistant:
 
     def _handle(self,request):
         phrase=normalize(request).strip(' .!?¿¡')
-        
-        # Try agent cycle for GitHub/Stack Overflow queries when LLM is available
-        if self.agent_cycle and re.search(r'\b(?:github|stack\s+overflow|stackoverflow)\b', phrase, re.I):
-            try:
-                from core.agent_types import ToolCall
-                def tool_executor(tool_calls):
-                    results = []
-                    for tc in tool_calls:
-                        try:
-                            cap = self.registry.get(tc.capability)
-                            result_data = cap.operations[tc.tool_name](**tc.arguments)
-                            from core.contracts import Result, Status
-                            result = Result(
-                                operation_id=tc.id,
-                                success=True,
-                                data={'value': result_data},
-                                status=Status.SUCCEEDED
-                            )
-                            results.append(result)
-                        except Exception as e:
-                            from core.contracts import Result, Status
-                            results.append(Result(
-                                operation_id=tc.id,
-                                success=False,
-                                error=str(e),
-                                status=Status.FAILED
-                            ))
-                    return results
-                
-                agent_response = self.agent_cycle.run(request, self.context, tool_executor)
-                if agent_response.message and not agent_response.error:
-                    return {'request':request, 'message':agent_response.message, 'reasoning':agent_response.reasoning_method}
-            except Exception:
-                # Fall back to regular parser on agent cycle error
-                pass
-        
+
+        offline_statement=bool(re.fullmatch(r'(?:no tengo|no hay|sin)\s+(?:internet|conexion)',phrase))
+        offline_question=bool(re.search(r'\b(?:no tengo|no hay|sin)\b.{0,30}\b(?:internet|conexion)\b',phrase)
+                              and re.search(r'\b(?:que puedes|que puedo|que sigue|que seguir|todavia|aun)\b',phrase))
+        if offline_statement or offline_question:
+            return {'request':request,'message':
+                    'Sin Internet sigo pudiendo consultar el sistema, RAM, CPU, procesos, servicios, archivos locales, '
+                    'hacer cálculos, abrir aplicaciones y ejecutar comandos explícitos de solo lectura. Las búsquedas '
+                    'web, GitHub, Stack Overflow y las traducciones en línea sí necesitan conexión.'}
+
+        storage_answer=self._answer_hypothetical_storage_question(request)
+        if storage_answer:
+            return {'request':request,'message':storage_answer}
+
+        if re.search(r'\b(?:borrar|eliminar|limpiar)\b.*\btemporales?\b',phrase) and re.search(
+                r'\b(?:que|primero|antes|deberia|debo|comprobar|revisar)\b',phrase):
+            return {'request':request,'message':
+                    'Antes de borrar, identifica la ruta y el tamaño, confirma qué aplicación creó esos archivos, '
+                    'comprueba que no haya procesos usándolos y revisa si son caché regenerable o datos temporales '
+                    'de una tarea activa. No borres a ciegas /tmp ni carpetas del sistema; empieza por revisar y '
+                    'elige solo archivos que reconozcas.'}
+
+        if phrase in {'almacenamiento','espacio','disco'}:
+            return {'request':request,'clarification':
+                    '¿Quieres consultar el espacio libre del disco, ver qué carpetas ocupan más, o calcular un espacio hipotético?'}
+
         if re.search(r'\bno me preguntes\b.*\b(terminal|terminales|consola)\b',phrase):
             self.auto_open_terminal=True
             return {'request':request,'message':'Entendido. En esta sesión abriré terminales vacías sin pedir confirmación. Seguiré confirmando cualquier comando que ejecutes dentro.'}
@@ -256,6 +245,42 @@ class Assistant:
             # A rule already answered. Asking Phi-3 to rewrite it sent the whole
             # capability catalog and blocked the prompt for minutes.
             return {'request':request,'message':conversational}
+        if self._is_code_generation_request(request):
+            if self.llm and self.llm.is_available():
+                try:
+                    answer=self.llm.generate_response(
+                        'Responde en español. Entrega una solución de código completa, ejecutable y adecuada para la petición; '
+                        'incluye bloque de código, instrucciones mínimas para usarla y dependencias necesarias. '
+                        'No afirmes que la probaste ni añadas enlaces o fuentes salvo que se pidan. '
+                        'Si falta un requisito esencial, pregunta antes de inventarlo. PETICIÓN: '+request[:700],
+                        max_tokens=240,
+                    ).strip()
+                    if answer:return {'request':request,'message':answer[:6000],'reasoning':'local_model_code'}
+                except RuntimeError as exc:
+                    return {'request':request,'message':f'No pude generar el código con el modelo local: {exc}'}
+            return {'request':request,'message':
+                    'Para generar y explicar código completo necesito un modelo de lenguaje activo. '
+                    'No voy a sustituirlo por fragmentos de buscador. Activa Ollama con /models o configura un proveedor LLM.'}
+        if self._is_troubleshooting_request(request):
+            if self.llm and self.llm.is_available():
+                try:
+                    answer=self.llm.generate_response(
+                        'Ayuda a diagnosticar el problema en español. Da una respuesta práctica y completa: '
+                        'causas probables, comprobaciones concretas en orden, comandos de diagnóstico no destructivos '
+                        'cuando sean pertinentes y qué salida compartir después. No ejecutes comandos, no inventes '
+                        'el estado del equipo y no busques en la web ni incluyas fuentes salvo que se soliciten. '
+                        'Si falta el mensaje de error o contexto, dilo al final con claridad. PROBLEMA: '+request[:900],
+                        max_tokens=240,
+                    ).strip()
+                    if answer:return {'request':request,'message':answer[:3500],'reasoning':'local_model_troubleshooting'}
+                except RuntimeError as exc:
+                    return {'request':request,'message':
+                            f'No pude consultar el modelo local: {exc}. Comparte el error exacto, el comando usado '
+                            'y qué esperabas que ocurriera; no he ejecutado ni buscado nada.'}
+            return {'request':request,'message':
+                    'Para diagnosticarlo sin adivinar, comparte el comando o acción, el mensaje de error completo '
+                    'y qué esperabas que ocurriera. Sin un modelo activo puedo ayudarte con comprobaciones concretas, '
+                    'pero no analizar automáticamente un problema abierto. No hice una búsqueda web.'}
         if 'no me deja moverme en el texto' in phrase or 'moverme en el texto' in phrase:
             return {'request':request,'message':'La entrada usa edición de línea del terminal: usa ← y → para mover el cursor, ↑ y ↓ para recorrer el historial y Ctrl+A/Ctrl+E para ir al inicio/final.'}
         if 'que son esos numeros' in phrase or 'qué son esos números' in request.casefold():
@@ -268,12 +293,30 @@ class Assistant:
                 plan=Plan([Operation('browser','open_url',args,description='abrir el sitio anterior en '+re_match.group(1),risk=op.risk)],request)
                 self.validator.validate(plan);results=self.executor.execute(plan);self.context.remember(request,results,plan)
                 return {'request':request,'plan':plan,'results':results}
+        if self._is_educational_request(request):
+            model_error=None
+            if self.llm and self.llm.is_available():
+                try:
+                    answer=self.llm.generate_response(
+                        'Responde en español con una explicación completa y clara para principiantes. '
+                        'Usa ejemplos si ayudan. No hagas búsquedas, no añadas enlaces ni afirmes hechos dudosos. '
+                        'PETICIÓN: '+request[:700],
+                        max_tokens=220,
+                    ).strip()
+                    if answer:return {'request':request,'message':answer[:1500],'reasoning':'local_model'}
+                except RuntimeError as exc:
+                    model_error=str(exc)
+            if model_error:
+                return {'request':request,'message':f'No pude generar una explicación con el modelo local: {model_error}'}
+            return {'request':request,'message':
+                    'No hay un modelo de lenguaje activo para elaborar una explicación completa. '
+                    'Activa Ollama con /models; buscaré en la web solo si me lo pides expresamente.'}
         plan=self.parser.parse(request,self.context)
         plan_message=getattr(plan,'message',None)
         if plan.reformat_last:
             return self._reformat_last(request)
-        auto_research=self.config['settings'].get('research',{}).get('automatic_for_general_questions',True)
         if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and self._is_open_ended_request(request):
+            model_error=None
             if self.llm and self.llm.is_available():
                 try:
                     message=self.llm.generate_response(
@@ -282,9 +325,28 @@ class Assistant:
                         'No ejecutes acciones. PETICIÓN: '+request[:700],
                     )
                     if message.strip():return {'request':request,'message':message.strip()[:1500],'reasoning':'local_model'}
-                except Exception:
-                    pass
+                except RuntimeError as exc:
+                    model_error=str(exc)
+            if model_error:
+                return {'request':request,'error':model_error,'error_category':'model_error'}
             return {'request':request,'message':'Para inventar o desarrollar una respuesta abierta necesito un modelo de lenguaje activo. No voy a convertir esa petición creativa en una búsqueda web.'}
+        if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible'):
+            if self._is_general_question(request):
+                if self.llm and self.llm.is_available():
+                    try:
+                        answer=self.llm.generate_response(
+                            'Responde directamente en español a la pregunta. Da contexto suficiente para que la respuesta '
+                            'sea útil, pero evita rodeos, enlaces y fuentes no solicitadas. Si no estás seguro o el dato '
+                            'puede haber cambiado, indícalo y ofrece buscarlo solo si el usuario lo pide. '
+                            'No ejecutes acciones. PREGUNTA: '+request[:700],
+                            max_tokens=220,
+                        ).strip()
+                        if answer:return {'request':request,'message':answer[:2200],'reasoning':'local_model'}
+                    except RuntimeError as exc:
+                        return {'request':request,'message':f'No pude consultar el modelo local: {exc}'}
+                return {'request':request,'message':
+                        'No hay un modelo de lenguaje activo para responder esa pregunta abierta. '
+                        'Activa uno con /models o pídeme expresamente que busque en la web.'}
         if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and self.llm and self.llm.is_available():
             try:
                 model_result=self._interpret_with_model(request)
@@ -294,13 +356,6 @@ class Assistant:
                 pass
             except Exception as exc:
                 return {'request':request,'error':str(exc),'error_category':'model_error'}
-        if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and auto_research and self._is_general_question(request):
-            query=request.strip()
-            plan=Plan([Operation('web','search',{'query':query},description=f'investigar «{query}» en la web y mostrar fuentes aquí',risk=Risk.LOW)],request)
-            try:self.validator.validate(plan)
-            except Exception as e:return {'request':request,'error':str(e),'results':[]}
-            results=self.executor.execute(plan);self.context.remember(request,results,plan)
-            return {'request':request,'plan':plan,'results':results}
         if plan_message and not plan.operations:
             if plan_message.startswith('__reformat_last_result__'):
                 return self._reformat_last(request)
@@ -340,8 +395,54 @@ class Assistant:
         normalized=normalize(request).strip(' .!?¿¡')
         words=normalized.split()
         if len(words)<2:return False
+        if re.match(r'^(?:averigua|investiga|busca|buscar|muestra|mostrar|consulta|haz|ejecuta|abre|cierra|borra|elimina|'
+                    r'crea|instala|cambia|reinicia|deten|stop|run|search|find)\b',normalized):
+            return False
         if Assistant._is_open_ended_request(normalized):return False
         return True
+
+    @staticmethod
+    def _is_educational_request(request):
+        normalized=normalize(request).strip(' .!?¿¡')
+        return bool(re.search(
+            r'\b(?:explicame|explica|explain|que es|como funciona)\b.*'
+            r'\b(?:como si|desde cero|para principiantes|estoy empezando|empezando|beginner|starting out)\b',
+            normalized,
+        ) and re.search(
+            r'\b(?:proceso|linux|kernel|ram|cpu|archivo|sistema|programa|protocolo|red|dns|git|python)\b',
+            normalized,
+        ))
+
+    @staticmethod
+    def _is_code_generation_request(request):
+        normalized=normalize(request).strip(' .!?¿¡')
+        if re.search(r'\b(?:github|stack\s+overflow|stackoverflow|busca|buscar|encuentra)\b',normalized):
+            return False
+        asks_for_code=bool(re.search(
+            r'\b(?:dame|genera|generame|escribe|crea|comparte|comparteme|implementa|necesito|quiero)\b',
+            normalized,
+        ))
+        code_topic=bool(re.search(r'\b(?:codigo|script|funcion|programa|ejemplo)\b',normalized))
+        return asks_for_code and code_topic
+
+    @staticmethod
+    def _is_troubleshooting_request(request):
+        normalized=normalize(request).strip(' .!?¿¡')
+        if re.match(r'^(?:busca|buscar|investiga|averigua|diagnostica|diagnosticar|revisa|revisar|'
+                    r'ejecuta|corre|haz|ping|traceroute|nmap|escanea|scan)\b',normalized):
+            return False
+        problem=bool(re.search(
+            r'\b(?:error|exception|traceback|fall[oa]|falla|problema|no funciona|no sirve|no responde|'
+            r'no conecta|no puedo|se rompe|se cierra|atascad[oa]|troubleshoot|diagnostica|diagnosticar|'
+            r'como arreglo|como soluciono|como resolver|ayudame a arreglar|fix)\b',
+            normalized,
+        ))
+        context=bool(re.search(
+            r'\b(?:porque|por que|ayuda|arregla|arreglo|arreglar|soluciona|soluciono|solucionar|resolver|diagnostico|diagnosticar|'
+            r'error|problema|funciona|funcionar|conecta|conectar|instala|instalar)\b',
+            normalized,
+        ))
+        return problem and context
 
     @staticmethod
     def _is_open_ended_request(request):
@@ -371,6 +472,36 @@ class Assistant:
             r'^(adios|bye|chao)\s*$',  # Despedidas simples
         )
         return any(re.search(pattern,normalized) for pattern in patterns)
+
+    @staticmethod
+    def _answer_hypothetical_storage_question(request):
+        from decimal import Decimal, InvalidOperation
+
+        normalized=normalize(request)
+        match=re.search(
+            r'\b(?:si\s+)?(?:tengo|hay|dispongo de)\s+(\d+(?:[.,]\d+)?)\s*'
+            r'(bytes?|kib|mib|gib|tib|kb|mb|gb|tb)\s+(?:libres?|disponibles?)\b'
+            r'.{0,100}\b(?:archivo|fichero)\b.{0,50}\b(?:ocupa|pesa|usa|requiere)\s+'
+            r'(\d+(?:[.,]\d+)?)\s*(bytes?|kib|mib|gib|tib|kb|mb|gb|tb)\b',
+            normalized,
+        )
+        if not match or not re.search(r'\b(?:cuanto|cuanta|queda|resta|espacio)\b',normalized):
+            return None
+        units={'byte':1,'bytes':1,'kb':1000,'mb':1000**2,'gb':1000**3,'tb':1000**4,
+               'kib':1024,'mib':1024**2,'gib':1024**3,'tib':1024**4}
+        try:
+            available=Decimal(match.group(1).replace(',','.'))
+            required=Decimal(match.group(3).replace(',','.'))
+        except InvalidOperation:
+            return None
+        available_bytes=available*units[match.group(2)]
+        required_bytes=required*units[match.group(4)]
+        remaining=available_bytes-required_bytes
+        if remaining<0:
+            amount=-remaining/units[match.group(2)]
+            return f'No alcanza: faltarían {amount.normalize()} {match.group(2).upper()}.'
+        amount=remaining/units[match.group(2)]
+        return f'Te quedarían {amount.normalize()} {match.group(2).upper()}.'
 
     def _interpret_with_model(self,request):
         import threading
@@ -415,6 +546,7 @@ class Assistant:
             'last_question':self.context.last_question,
             'last_answer':self.context.last_answer,
             'last_search':self.context.last_search,
+            'entities':self.context.entities,
             'recent_exchanges':list(self.context.events)[-6:],
         }
         if previous:

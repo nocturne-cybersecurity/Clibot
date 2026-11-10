@@ -19,7 +19,15 @@ _add('filesystem','Local files and directories',{
  'find_large':{'properties':{'path':'path','minimum_bytes':'integer'}},'extract':{'required':['archive'],'properties':{'archive':'path','destination':'path'}},
  'archive':{'required':['source','destination'],'properties':{'source':'path','destination':'path'}}},
  {'delete':'moderate','move':'moderate','copy':'moderate','mkdir':'low','create':'moderate','write':'moderate','extract':'moderate','archive':'low'})
-_add('system','Host and operating system inspection',{'info':system.info,'logs':system.logs,'time':system.current_time,'ram':system.ram,'identity':system.identity,'cwd':system.working_directory,'cpu_info':system.cpu_info,'gpu_info':system.gpu_info,'hardware_info':system.hardware_info},{'info':{'properties':{}},'logs':{'properties':{'lines':'integer'}},'time':{'properties':{'include_date':'boolean'}},'ram':{'properties':{}},'identity':{'properties':{}},'cwd':{'properties':{}},'cpu_info':{'properties':{}},'gpu_info':{'properties':{}},'hardware_info':{'properties':{}}})
+_add('system','Host and operating system inspection',{
+ 'info':system.info,'logs':system.logs,'time':system.current_time,'ram':system.ram,'identity':system.identity,
+ 'cwd':system.working_directory,'cpu_info':system.cpu_info,'gpu_info':system.gpu_info,'hardware_info':system.hardware_info,
+ 'disk_hogs':system.disk_hogs,'large_files':system.large_files},{
+ 'info':{'properties':{}},'logs':{'properties':{'lines':'integer'}},'time':{'properties':{'include_date':'boolean'}},
+ 'ram':{'properties':{}},'identity':{'properties':{}},'cwd':{'properties':{}},'cpu_info':{'properties':{}},
+ 'gpu_info':{'properties':{}},'hardware_info':{'properties':{}},
+ 'disk_hogs':{'properties':{'path':'path','limit':'integer'}},
+ 'large_files':{'properties':{'path':'path','limit':'integer','min_mb':'integer'}}})
 _add('processes','Read process list, resource usage, and explicitly targeted signals',{
  'list':processes.listing,'memory_top':processes.memory_top,'inspect':processes.inspect,'terminate':processes.terminate,
  'cpu_top':processes.cpu_top,'io_top':processes.io_top,'process_temperatures':processes.process_temperatures,'detailed_inspect':processes.detailed_inspect,
@@ -91,7 +99,7 @@ _add('cybersecurity','Authorized security inspection and reporting',{
   'resolve_dns':{'required':['host'],'properties':{'host':'string'}},'whois_lookup':{'required':['target'],'properties':{'target':'string','timeout':'integer'}},'scanner_status':{'properties':{}},
   'report':{'required':['title','scope','findings','output'],'properties':{'title':'string','scope':'string','findings':'array','output':'path','format':'string'}}},
  {'scan':'high','resolve_dns':'low','report':'moderate'})
-_add('browser','Desktop browser and application launch',{'open_url':browser.open_url,'open_application':browser.open_application},{'open_url':{'required':['url'],'properties':{'url':'string','browser':'string'}},'open_application':{'required':['name'],'properties':{'name':'string','command':'string'}}},{'open_url':'moderate','open_application':'low'})
+_add('browser','Desktop browser and application control',{'open_url':browser.open_url,'open_application':browser.open_application,'close_application':browser.close_application},{'open_url':{'required':['url'],'properties':{'url':'string','browser':'string'}},'open_application':{'required':['name'],'properties':{'name':'string','command':'string'}},'close_application':{'required':['name'],'properties':{'name':'string'}}},{'open_url':'moderate','open_application':'low','close_application':'high'})
 _add('translation','Translate explicitly supplied text using Google Translate',{'translate':translation.translate},{'translate':{'required':['text','target_language'],'properties':{'text':'string','target_language':'string','source_language':'string','timeout':'integer'}}},{'translate':'moderate'})
 _add('web','Search the web and show results in the terminal',{'search':web_search.search},{'search':{'required':['query'],'properties':{'query':'string','limit':'integer','timeout':'integer'}}},{'search':'low'})
 _add('package_manager','Package management for apt, pip, and npm',{
@@ -129,16 +137,16 @@ _add('automation','Automation for scripts, cron jobs, and systemd timers',{
  'create_script':{'required':['path','content'],'properties':{'path':'path','content':'string','executable':'boolean'}},'list_cron_jobs':{'properties':{'user':'string'}},'add_cron_job':{'required':['cron_expression','command'],'properties':{'cron_expression':'string','command':'string','user':'string'}},'remove_cron_job':{'required':['cron_expression','command'],'properties':{'cron_expression':'string','command':'string','user':'string'}},'list_systemd_timers':{'properties':{}},'create_systemd_timer':{'required':['name','command','schedule'],'properties':{'name':'string','command':'string','schedule':'string','description':'string'}},'enable_systemd_timer':{'required':['name'],'properties':{'name':'string'}},'disable_systemd_timer':{'required':['name'],'properties':{'name':'string'}}},
  {'create_script':'moderate','add_cron_job':'high','remove_cron_job':'high','create_systemd_timer':'moderate','enable_systemd_timer':'moderate','disable_systemd_timer':'moderate'})
 _add('github','GitHub API integration for repositories, issues, and code',{
- 'search_repositories':github.search_repositories,'search_issues':github.search_issues,'get_repository':github.get_repository,
+ 'search_repositories':github.search_repositories,'search_code':github.search_code,'search_issues':github.search_issues,'get_repository':github.get_repository,
  'get_readme':github.get_readme,'get_file_content':github.get_file_content,'get_rate_limit_status':github.get_rate_limit_status},{
- 'search_repositories':{'required':['query'],'properties':{'query':'string','language':'string','per_page':'integer'}},'search_issues':{'required':['query'],'properties':{'query':'string','per_page':'integer'}},
+ 'search_repositories':{'required':['query'],'properties':{'query':'string','language':'string','per_page':'integer'}},'search_code':{'required':['query'],'properties':{'query':'string','per_page':'integer'}},'search_issues':{'required':['query'],'properties':{'query':'string','per_page':'integer'}},
  'get_repository':{'required':['owner','repo'],'properties':{'owner':'string','repo':'string'}},'get_readme':{'required':['owner','repo'],'properties':{'owner':'string','repo':'string'}},
- 'get_file_content':{'required':['owner','repo','path'],'properties':{'owner':'string','repo':'string','path':'string','ref':'string'}},'get_rate_limit_status':{'properties':{}}},{'search_repositories':'read_only','search_issues':'read_only','get_repository':'read_only','get_readme':'read_only','get_file_content':'read_only','get_rate_limit_status':'read_only'})
+ 'get_file_content':{'required':['owner','repo','path'],'properties':{'owner':'string','repo':'string','path':'string','ref':'string'}},'get_rate_limit_status':{'properties':{}}},{'search_repositories':'read_only','search_code':'read_only','search_issues':'read_only','get_repository':'read_only','get_readme':'read_only','get_file_content':'read_only','get_rate_limit_status':'read_only'})
 _add('stack_exchange','Stack Exchange API integration for Stack Overflow and other sites',{
- 'search_questions':stack_exchange.search_questions,'get_question':stack_exchange.get_question,'get_answers':stack_exchange.get_answers,
+ 'search_questions':stack_exchange.search_questions,'search_code_examples':stack_exchange.search_code_examples,'get_question':stack_exchange.get_question,'get_answers':stack_exchange.get_answers,
  'search_similar':stack_exchange.search_similar,'get_rate_limit_status':stack_exchange.get_rate_limit_status},{
- 'search_questions':{'required':['query'],'properties':{'query':'string','site':'string','tags':'array','pagesize':'integer'}},'get_question':{'required':['question_id'],'properties':{'question_id':'integer','site':'string'}},
- 'get_answers':{'required':['question_id'],'properties':{'question_id':'integer','site':'string'}},'search_similar':{'required':['title'],'properties':{'title':'string','site':'string','pagesize':'integer'}},'get_rate_limit_status':{'properties':{}}},{'search_questions':'read_only','get_question':'read_only','get_answers':'read_only','search_similar':'read_only','get_rate_limit_status':'read_only'})
+ 'search_questions':{'required':['query'],'properties':{'query':'string','site':'string','tags':'array','pagesize':'integer'}},'search_code_examples':{'required':['query'],'properties':{'query':'string','site':'string','pagesize':'integer'}},'get_question':{'required':['question_id'],'properties':{'question_id':'integer','site':'string'}},
+ 'get_answers':{'required':['question_id'],'properties':{'question_id':'integer','site':'string'}},'search_similar':{'required':['title'],'properties':{'title':'string','site':'string','pagesize':'integer'}},'get_rate_limit_status':{'properties':{}}},{'search_questions':'read_only','search_code_examples':'read_only','get_question':'read_only','get_answers':'read_only','search_similar':'read_only','get_rate_limit_status':'read_only'})
 
 # Optional capabilities can be added as focused modules under capabilities/plugins/.
 from .plugins import load as _load_plugins

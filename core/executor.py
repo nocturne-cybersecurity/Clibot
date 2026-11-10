@@ -48,6 +48,10 @@ class Executor:
     def _risk(self, op):
         if op.capability == 'assistant':
             return op.risk.value
+        if op.capability == 'development' and op.name == 'execute_command':
+            from capabilities.development import is_read_only_command
+            if is_read_only_command(op.arguments.get('command', '')):
+                return 'read_only'
         registered = self.registry.get(op.capability).risks.get(op.name, op.risk.value)
         return max((op.risk.value, registered), key=lambda value: RISK_ORDER.get(value, 0))
 

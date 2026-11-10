@@ -57,6 +57,35 @@ def test_open_application_explains_missing_graphical_session(monkeypatch):
         raise AssertionError('expected a clear graphical-session error')
 
 
+def test_close_application_targets_only_known_exact_process(monkeypatch):
+    seen={}
+    monkeypatch.setattr('capabilities.processes.find_by_name',
+                        lambda name,exact: {'processes':[{'pid':123}] if name=='chrome' else []})
+    monkeypatch.setattr('capabilities.processes.terminate_by_name',
+                        lambda name,**kwargs: (seen.update(name=name,kwargs=kwargs) or {'terminated':[123],'failed':[]}))
+    assert browser.close_application('Google Chrome')=='Solicité el cierre de Google Chrome (1 proceso(s)).'
+    assert seen=={'name':'chrome','kwargs':{'exact':True,'max_matches':50}}
+
+
+def test_close_application_rejects_unrecognized_process_name():
+    import pytest
+    with pytest.raises(ValueError,match='No encontré'):
+        browser.close_application('systemd')
+
+
+def test_close_application_resolves_other_installed_desktop_apps(monkeypatch, tmp_path):
+    seen={}
+    desktop=tmp_path/'libreoffice.desktop'
+    entry={'Exec':'/usr/bin/libreoffice --writer %U','StartupWMClass':'libreoffice'}
+    monkeypatch.setattr(browser,'_find_desktop_entry',lambda _name:(desktop,'LibreOffice',entry))
+    monkeypatch.setattr('capabilities.processes.find_by_name',
+                        lambda name,exact:{'processes':[{'pid':321}] if name=='libreoffice' else []})
+    monkeypatch.setattr('capabilities.processes.terminate_by_name',
+                        lambda name,**kwargs:(seen.update(name=name,kwargs=kwargs) or {'terminated':[321],'failed':[]}))
+    assert 'LibreOffice' in browser.close_application('LibreOffice')
+    assert seen['name']=='libreoffice'
+
+
 def test_application_request_reaches_launcher_after_confirmation(monkeypatch):
     from core.assistant import Assistant
 
@@ -69,3 +98,17 @@ def test_application_request_reaches_launcher_after_confirmation(monkeypatch):
     response = assistant.handle('abre PyCharm')
     assert response['results'][0].success
     assert launched == ['pycharm']
+
+
+def test_close_app_request_is_confirmed_and_dispatched(monkeypatch):
+    from core.assistant import Assistant
+
+    prompts=[]
+    assistant=Assistant(confirm=lambda prompt: prompts.append(prompt) or 'yes')
+    closed=[]
+    monkeypatch.setitem(assistant.registry.get('browser').operations,'close_application',
+                        lambda name: closed.append(name) or f'Solicité el cierre de {name}.')
+    response=assistant.handle('cierra chrome')
+    assert response['results'][0].success
+    assert closed==['chrome']
+    assert len(prompts)==1 and 'browser.close_application' in prompts[0]

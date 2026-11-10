@@ -17,14 +17,18 @@ from __future__ import annotations
 import builtins
 import contextlib
 import difflib
+import getpass
 import json
 import os
 import random
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 try:
     from rich import box
@@ -92,6 +96,8 @@ COMMANDS = [
     ('/verbose', '', 'Alternar modo detallado'),
     ('/paginate', '', 'Alternar paginación'),
     ('/model', '[on|off]', 'Activar o desactivar el modelo'),
+    ('/models', '[list|use|pull]', 'Listar, cambiar o descargar modelos Ollama'),
+    ('/token', '[set|status|clear]', 'Configurar token de GitHub sin mostrarlo'),
     ('/run', '<cmd>', 'Ejecutar un comando'),
     ('/cd', '<dir>', 'Cambiar de directorio'),
     ('/export', '[archivo]', 'Guardar la sesión en Markdown'),
@@ -187,6 +193,11 @@ class _SlashCompleter(Completer):
             for opt in ('on', 'off'):
                 if opt.startswith(arg.lower()):
                     yield Completion(opt, start_position=-len(arg))
+        elif low.startswith('/models '):
+            arg = text[8:]
+            for opt in ('list', 'use ', 'pull '):
+                if opt.startswith(arg.lower()):
+                    yield Completion(opt, start_position=-len(arg))
         elif text.startswith('/') and ' ' not in text:
             for name, args, desc in COMMANDS:
                 if name.startswith(low):
@@ -234,7 +245,8 @@ class Terminal:
             '/history': self._cmd_history, '/forget': self._cmd_forget, '/reset': self._cmd_reset,
             '/clear': self._cmd_clear, '/json': self._cmd_json, '/yaml': self._cmd_yaml,
             '/silent': self._cmd_silent, '/verbose': self._cmd_verbose, '/paginate': self._cmd_paginate,
-            '/model': self._cmd_model, '/run': self._cmd_run, '/cd': self._cmd_cd,
+            '/model': self._cmd_model, '/models': self._cmd_models, '/token': self._cmd_token,
+            '/run': self._cmd_run, '/cd': self._cmd_cd,
             '/export': self._cmd_export, '/exit': lambda _a: 'exit',
         }
         self._setup_input()
@@ -596,6 +608,7 @@ class Terminal:
         self.console.print(cmds)
         self.console.print(keys)
         self.console.print(ex)
+        self.console.print(Text('  /token set guarda GitHub Token localmente; /models list|use|pull gestiona Ollama.', style=DIM))
         self.console.print(Text('  ⚠ Las acciones importantes piden confirmación.', style=WARN))
 
     def _cmd_caps(self, _a):
@@ -713,6 +726,164 @@ class Terminal:
             self.console.print(Text('  Modelo desactivado (respuestas por reglas).', style=OK))
         else:
             self.console.print(Text('  Uso: /model [on|off]', style=DIM))
+
+    @staticmethod
+    def _llm_config_path():
+        configured = os.environ.get('CLIBOT_LLM_CONFIG')
+        if configured:
+            return Path(configured).expanduser()
+        config_home = Path(os.environ.get('XDG_CONFIG_HOME', Path.home() / '.config'))
+        return config_home / 'clibot' / 'llm.json'
+
+    def _ollama_url(self):
+        llm = self.assistant.llm
+        base_url = getattr(llm, 'base_url', None) if getattr(llm, 'provider', None) == 'ollama' else None
+        return (base_url or os.environ.get('CLIBOT_OLLAMA_URL', 'http://127.0.0.1:11434')).rstrip('/')
+
+    def _ollama_models(self):
+        try:
+            with urlopen(self._ollama_url() + '/api/tags', timeout=2) as response:
+                data = json.loads(response.read(256_000).decode('utf-8'))
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, UnicodeDecodeError) as exc:
+            raise RuntimeError(f'No se pudo consultar Ollama ({self._ollama_url()}): {exc}') from exc
+        models = data.get('models') if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            raise RuntimeError('Ollama devolvió una lista de modelos no válida.')
+        return [model for model in models if isinstance(model, dict) and isinstance(model.get('name'), str)]
+
+    def _save_ollama_model(self, model):
+        path = self._llm_config_path()
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(path.parent, 0o700)
+        fd, temporary = tempfile.mkstemp(prefix='.llm-', dir=path.parent)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+                json.dump({'provider': 'ollama', 'model': model, 'base_url': self._ollama_url()}, stream)
+                stream.write('\n')
+            os.replace(temporary, path)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            raise
+        from intelligence.llm_integration import LLMIntegration
+        self.assistant.llm = LLMIntegration(config_path=str(path))
+        self._model_cache = None
+        if not self.assistant.llm.is_available():
+            raise RuntimeError(f'Ollama no confirmó el modelo {model!r} como disponible.')
+
+    def _cmd_models(self, arg):
+        action, _, model = arg.strip().partition(' ')
+        action = action.casefold() if action else 'list'
+        model = model.strip()
+        if action in {'list', 'ls'} and not model:
+            try:
+                models = self._ollama_models()
+            except RuntimeError as exc:
+                self.console.print(Text(f'  {exc} · inicia Ollama e inténtalo de nuevo.', style=ERR))
+                return
+            if not models:
+                self.console.print(Text('  No hay modelos descargados. Usa /models pull <modelo>.', style=DIM))
+                return
+            current = getattr(self.assistant.llm, 'model', None)
+            for item in models:
+                name = item['name']
+                marker = '● ' if name == current else '  '
+                size = item.get('size')
+                size_text = f' · {size / 1_000_000_000:.1f} GB' if isinstance(size, (int, float)) else ''
+                self.console.print(Text(f'  {marker}{name}{size_text}', style=OK if name == current else DIM))
+            self.console.print(Text('  Cambiar: /models use <modelo> · Descargar: /models pull <modelo>', style=DIM))
+            return
+        if action == 'use' and model:
+            try:
+                installed = {item['name'] for item in self._ollama_models()}
+                if model not in installed:
+                    self.console.print(Text(f'  {model} no está descargado. Usa /models pull {model}.', style=WARN))
+                    return
+                self._save_ollama_model(model)
+            except (RuntimeError, OSError, ValueError) as exc:
+                self.console.print(Text(f'  No se pudo activar el modelo: {exc}', style=ERR))
+                return
+            self.console.print(Text(f'  Modelo Ollama seleccionado: {model}', style=OK))
+            return
+        if action == 'pull' and model and len(model) <= 128 and all(
+                char.isalnum() or char in '._:/-' for char in model):
+            self._pull_ollama_model(model)
+            return
+        self.console.print(Text('  Uso: /models [list | use <modelo> | pull <modelo>]', style=DIM))
+
+    def _pull_ollama_model(self, model):
+        request = Request(self._ollama_url() + '/api/pull',
+                          data=json.dumps({'name': model, 'stream': True}).encode('utf-8'),
+                          headers={'Content-Type': 'application/json'}, method='POST')
+        try:
+            with urlopen(request, timeout=600) as response:
+                for raw_line in response:
+                    if not raw_line.strip():
+                        continue
+                    update = json.loads(raw_line.decode('utf-8'))
+                    if update.get('error'):
+                        raise RuntimeError(str(update['error']))
+                    status = update.get('status', 'Descargando')
+                    total, complete = update.get('total'), update.get('completed')
+                    progress = f' {complete * 100 // total}%' if isinstance(total, int) and total > 0 and isinstance(complete, int) else ''
+                    self.console.print(Text(f'  {status}{progress}', style=DIM), end='\r')
+                    if status == 'success':
+                        self.console.print()
+        except (HTTPError, URLError, TimeoutError, OSError, ValueError, UnicodeDecodeError, RuntimeError) as exc:
+            self.console.print(Text(f'\n  No se pudo descargar {model}: {exc}', style=ERR))
+            return
+        try:
+            self._save_ollama_model(model)
+        except (RuntimeError, OSError, ValueError) as exc:
+            self.console.print(Text(f'\n  Descargado, pero no se pudo seleccionar {model}: {exc}', style=WARN))
+            return
+        self.console.print(Text(f'\n  Modelo descargado y seleccionado: {model}', style=OK))
+
+    def _cmd_token(self, arg):
+        from capabilities.github import (
+            clear_github_token, configure_github_token, github_token_path,
+        )
+        action = arg.strip().casefold() or 'status'
+        path = github_token_path()
+        environment_token = bool(os.environ.get('GITHUB_TOKEN'))
+        if action in {'status', 'estado'}:
+            configured = environment_token or path.is_file()
+            source = 'GITHUB_TOKEN del entorno' if environment_token else (str(path) if path.is_file() else None)
+            message = f'  Token de GitHub configurado ({source}).' if configured else '  No hay un token de GitHub configurado.'
+            self.console.print(Text(message, style=OK if configured else DIM))
+            self.console.print(Text('  Usa /token set para guardarlo sin mostrarlo o /token clear para borrarlo.', style=DIM))
+            return
+        if action in {'set', 'configurar'}:
+            if not sys.stdin.isatty():
+                self.console.print(Text('  Para ocultar el token, ejecuta /token set desde una terminal interactiva.', style=ERR))
+                return
+            self.console.print(Text('  El token se solicitará sin mostrarlo ni guardarlo en el historial.', style=DIM))
+            try:
+                token = getpass.getpass('  GitHub token: ')
+                path = configure_github_token(token)
+            except (EOFError, KeyboardInterrupt):
+                self.console.print(Text('\n  Configuración cancelada.', style=WARN))
+                return
+            except (OSError, ValueError) as exc:
+                self.console.print(Text(f'  No se pudo guardar el token: {exc}', style=ERR))
+                return
+            self.console.print(Text(f'  Token guardado de forma privada en {path}. No se muestra su valor.', style=OK))
+            return
+        if action in {'clear', 'borrar', 'eliminar'}:
+            try:
+                clear_github_token()
+            except OSError as exc:
+                self.console.print(Text(f'  No se pudo borrar el token: {exc}', style=ERR))
+                return
+            message = '  Token guardado eliminado.'
+            if environment_token:
+                message += ' GITHUB_TOKEN sigue disponible desde el entorno.'
+            self.console.print(Text(message, style=OK))
+            return
+        self.console.print(Text('  Uso: /token [status | set | clear]', style=DIM))
 
     def _cmd_run(self, arg):
         if not arg:

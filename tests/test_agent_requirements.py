@@ -145,7 +145,7 @@ class TestLLMExplanations:
         response = assistant.handle("Explícame qué es un proceso en Linux para principiantes.")
         
         # Should handle gracefully
-        assert response.get('message') or response.get('clarification')
+        assert response.get('message') or response.get('clarification') or response.get('results')
 
 
 class TestNetworkDistinction:

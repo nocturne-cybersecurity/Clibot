@@ -199,3 +199,57 @@ def open_application(name, command=None):
     subprocess.Popen([executable], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                      stderr=subprocess.DEVNULL, start_new_session=True)
     return f'Abrí {name}.'
+
+
+def close_application(name):
+    """Request a graceful close only for a recognized desktop application."""
+    aliases = {
+        'chrome': ('chrome',), 'google chrome': ('chrome',), 'google-chrome': ('chrome',),
+        'firefox': ('firefox', 'firefox-esr'), 'firefox-esr': ('firefox-esr', 'firefox'),
+        'chromium': ('chromium', 'chromium-browser'), 'chromium-browser': ('chromium-browser', 'chromium'),
+        'code': ('code',), 'vscode': ('code',), 'visual studio code': ('code',),
+        'spotify': ('spotify',), 'discord': ('Discord', 'discord'),
+        'telegram': ('telegram-desktop', 'Telegram'), 'slack': ('slack',),
+        'pycharm': ('pycharm', 'pycharm64'), 'pycharm community': ('pycharm', 'pycharm64'),
+        'gedit': ('gedit',), 'mousepad': ('mousepad',), 'kate': ('kate',),
+        'gimp': ('gimp',), 'vlc': ('vlc',), 'nautilus': ('nautilus',),
+        'files': ('nautilus', 'thunar', 'dolphin'), 'archivos': ('nautilus', 'thunar', 'dolphin'),
+        'calculadora': ('gnome-calculator', 'kcalc', 'qalculate-gtk'),
+        'calculator': ('gnome-calculator', 'kcalc', 'qalculate-gtk'),
+    }
+    key = _normal(str(name))
+    candidates = aliases.get(key)
+    if not candidates:
+        found = _find_desktop_entry(str(name))
+        if not found:
+            raise ValueError(f'No encontré «{name}» entre las aplicaciones de escritorio instaladas.')
+        path, display_name, entry = found
+        candidates = [path.stem, display_name, entry.get('StartupWMClass', '')]
+        try:
+            argv = shlex.split(entry.get('Exec', ''))
+        except ValueError as exc:
+            raise ValueError(f'La entrada de «{display_name}» tiene un comando inválido.') from exc
+        try_exec = entry.get('TryExec', '').strip()
+        if try_exec:
+            candidates.append(Path(try_exec).name)
+        if argv:
+            executable = Path(argv[0]).name
+            if executable not in {'sh', 'bash', 'dash', 'zsh', 'env', 'gtk-launch', 'xdg-open'}:
+                candidates.append(executable)
+        candidates = tuple(dict.fromkeys(candidate for candidate in candidates if candidate))
+
+    from capabilities.processes import find_by_name, terminate_by_name
+    for process_name in candidates:
+        matches = find_by_name(process_name, exact=True)
+        if matches['processes']:
+            result = terminate_by_name(process_name, exact=True, max_matches=50)
+            terminated = len(result['terminated'])
+            failed = len(result['failed'])
+            if not terminated:
+                details = result['failed'][0]['error'] if result['failed'] else result.get('note', 'sin detalles')
+                raise RuntimeError(f'No pude cerrar {name}: {details}')
+            message = f'Solicité el cierre de {name} ({terminated} proceso(s)).'
+            if failed:
+                message += f' No se pudieron cerrar {failed} proceso(s).'
+            return message
+    raise ProcessLookupError(f'No encontré procesos de {name} en ejecución.')

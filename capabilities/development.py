@@ -1,5 +1,28 @@
 """Explicit local development helpers."""
-import subprocess, shutil, sys, os, shlex
+import subprocess, shutil, sys, os, shlex, re, unicodedata
+
+READ_ONLY_COMMANDS = frozenset({
+    'date', 'df', 'fastfetch', 'free', 'hostname', 'id', 'lsb_release',
+    'lscpu', 'lsblk', 'nproc', 'nvidia-smi', 'pwd', 'uname', 'uptime', 'whoami',
+})
+_ANSI_ESCAPE = re.compile(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\].*?(?:\x07|\x1B\\))')
+
+
+def _clean_terminal_output(value):
+    value=_ANSI_ESCAPE.sub('',value)
+    return ''.join(char for char in value
+                   if unicodedata.category(char) not in {'Cc','Cf'} or char in '\t\n')
+
+
+def is_read_only_command(command):
+    """Allow common, argument-free system-summary commands without a prompt."""
+    try:
+        argv=shlex.split(command)
+    except ValueError:
+        return False
+    return len(argv)==1 and argv[0] in READ_ONLY_COMMANDS
+
+
 def python_version():return {'executable':sys.executable,'version':sys.version}
 def git_status(path='.'):
     if not shutil.which('git'):raise FileNotFoundError('git is not installed')
@@ -62,7 +85,8 @@ def execute_command(command,timeout=30):
         if p.returncode == 0 and stderr_text:
             lines = [line for line in stderr_text.splitlines() if not line.startswith('[sudo]')]
             stderr_text = '\n'.join(lines)
-        return {'exit_code':p.returncode,'stdout':p.stdout[:100000],'stderr':stderr_text,'argv':raw_stages[0]}
+        return {'exit_code':p.returncode,'stdout':_clean_terminal_output(p.stdout)[:100000],
+                'stderr':_clean_terminal_output(stderr_text)[:100000],'argv':raw_stages[0]}
 
     from core.pipeline import run_pipeline
     from execution.command import Command
@@ -81,8 +105,8 @@ def execute_command(command,timeout=30):
     return {
         'exit_code':failing_code,
         'exit_codes':result['exit_codes'],
-        'stdout':result['stdout'],
-        'stderr':'\n'.join(clean_stderr)[:100000],
+        'stdout':_clean_terminal_output(result['stdout']),
+        'stderr':_clean_terminal_output('\n'.join(clean_stderr))[:100000],
         'success':result['success'],
         'argv':raw_stages,
     }

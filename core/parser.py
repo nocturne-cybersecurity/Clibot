@@ -768,6 +768,26 @@ def build_stackoverflow_search_with_query(s, text, ctx):
                            Risk.READ_ONLY, f'buscar en Stack Overflow: {query}'))
 
 
+def build_code_search(s, text, ctx):
+    """Search attributed source snippets instead of mistaking code requests for file operations."""
+    query=re.sub(
+        r'\b(?:dame|muestrame|comparteme|necesito|quiero|busca|buscar|encuentra|un|una|el|la|los|las|'
+        r'ejemplo|ejemplos|codigo|fragmento|fragmentos|snippet|snippets|de|para|en|github|stack|overflow|'
+        r'programacion|programming)\b',
+        ' ', s,
+    )
+    query=' '.join(query.split())
+    query=re.sub(r'\bleer\b','read',query)
+    if not query:
+        return _ask(text, '¿Qué lenguaje o tarea quieres usar para el ejemplo de código?')
+    if re.search(r'\bgithub\b',s):
+        return _plan(text,_op('github','search_code',{'query':query,'per_page':5},Risk.READ_ONLY,
+                              f'buscar fragmentos de código en GitHub: {query}'))
+    return _plan(text,_op('stack_exchange','search_code_examples',
+                          {'query':query,'site':'stackoverflow','pagesize':5},Risk.READ_ONLY,
+                          f'buscar ejemplos atribuidos en Stack Overflow: {query}'))
+
+
 def build_calculator(s, text, ctx):
     """Build calculator operation from natural language math expression."""
     # Remove question marks and normalize
@@ -785,7 +805,7 @@ def build_calculator(s, text, ctx):
 
 def build_context_entity(s, text, ctx):
     """Build context entity storage from statements like 'Mi carpeta se llama X'."""
-    m = re.search(r'\b(?:mi|el|la)\s+(\w+(?:\s+\w+)?)\s+(?:se llama|es|está|está en)\s+(.+?)[.?!]*$', s, re.I)
+    m = re.search(r'\b(?:mi|el|la)\s+([\w]+(?:\s+[\w]+){0,3}?)\s+(?:se llama|es|está|está en)\s+(.+?)[.?!]*$', text, re.I)
     if not m:
         return None
     
@@ -794,7 +814,7 @@ def build_context_entity(s, text, ctx):
     
     if ctx and hasattr(ctx, 'set_entity'):
         ctx.set_entity(entity_type, entity_value)
-        return {'request': text, 'message': f'Entendido, {entity_type} es {entity_value}', 'clarification': None}
+        return Plan([],text,message=f'Entendido, {entity_type} es {entity_value}. Lo recordaré durante esta sesión.')
     
     return None
 
@@ -843,6 +863,24 @@ def build_kill_by_name(s, text, ctx):
     force = bool(re.search(r'\b(?:a la fuerza|forzado|forzar|kill -9|-9|con kill)\b', s))
     return _plan(text, _op('processes', 'terminate_by_name', {'name': name, 'force': force, 'exact': False}, Risk.HIGH,
                            f'terminar los procesos llamados {name}'))
+
+
+def build_close_application(s, text, ctx):
+    match = re.search(
+        r'\b(?:cierra|cerrar|cierre|sal de|salir de|finaliza|finalizar)\s+'
+        r'(?:(?:la|el)\s+)?(?:(?:aplicacion|app|programa|navegador)\s+(?:de\s+)?)?'
+        r'(.+?)\s*$',
+        s,
+    )
+    if not match:
+        return None
+    name = ' '.join(match.group(1).split())
+    if (name in {'sesion', 'pantalla', 'ventana', 'pestana', 'tab', 'conexion', 'servidor',
+                 'servicio', 'sistema', 'equipo', 'computadora', 'terminal', 'proceso'} or
+            not re.fullmatch(r'[\w .+-]{1,64}', name)):
+        return None
+    return _plan(text, _op('browser', 'close_application', {'name': name}, Risk.HIGH,
+                           f'solicitar el cierre de la aplicación {name}'))
 
 
 def build_find_process(s, text, ctx):
@@ -942,6 +980,15 @@ def build_system_logs(s, text, ctx):
 
 def build_disk_usage(s, text, ctx):
     return _plan(text, _op('filesystem', 'disk_usage', {'path': _path(text) or '.'}))
+
+
+def build_disk_hogs(s, text, ctx):
+    path=_path(text) or '~'
+    if re.search(r'\b(?:archivos?|ficheros?)\b',s) and re.search(r'\b(?:grandes|pesados|mas espacio)\b',s):
+        return _plan(text,_op('system','large_files',{'path':path,'limit':10,'min_mb':50},
+                              desc=f'buscar archivos grandes dentro de {path}'))
+    return _plan(text,_op('system','disk_hogs',{'path':path,'limit':10},
+                          desc=f'consultar las carpetas que más espacio ocupan dentro de {path}'))
 
 
 def build_search_names(s, text, ctx):
@@ -1242,6 +1289,11 @@ def build_explicit_exec(s, text, ctx):
     return _unknown(text)
 
 
+def build_fastfetch(s, text, ctx):
+    return _plan(text,_op('development','execute_command',{'command':'fastfetch'},Risk.HIGH,
+                          'mostrar información del sistema con fastfetch'))
+
+
 def _remote_scan(s, text):
     if not re.search(r'\b(?:nmap|escanea|escanear|scan)\b', s):
         return False
@@ -1353,6 +1405,11 @@ GUARDS = [
          _rx(r'^(?:estoy|me siento|me gusta|me encanta|tengo (?:hambre|sueno|frio|calor|sed|miedo|una duda|una pregunta|un problema))\b'),
          lambda s, t, c: _unknown(t),
          [('estoy cansado de esto', 'unrecognized'), ('me gusta el sistema', 'unrecognized')]),
+    Rule('creative_guard',
+         _all(_rx(r'^(?:inventa|imagina|escribe|redacta|compone|write|invent|imagine|compose)\b'),
+              _rx(r'\b(poema|poesia|cuento|historia|cancion|guion|chiste|personaje|deporte nuevo|slogan)\b')),
+         lambda s, t, c: _unknown(t),
+         [('escribe un poema sobre el mar', 'unrecognized'), ('imagina una historia de robots', 'unrecognized')]),
     Rule('howto_guard',
          _rx(r'^(?:como|de que forma|how)\b.*\b(?:cre\w+|hac\w+|borr\w+|elimin\w+|copi\w+|mov\w+|renombr\w+|instal\w+|actualiz\w+|ejecut\w+|corr\w+|sal\w+|cerr\w+|ver|consult\w+|apag\w+|reinici\w+|aprend\w+|empiez\w+|levant\w+|arranc\w+|habilit\w+|deshabilit\w+|recarg\w+|monit\w+|bloque\w+|conect\w+|abr\w+|inici\w+|detener|deten\w*|learn|do|create|delete|install)\b'),
          lambda s, t, c: _unknown(t),
@@ -1369,6 +1426,15 @@ GUARDS = [
 
 # Reglas que deben ir antes de «service_change» y «open» porque comparten verbos (inicia, abre, apaga, reinicia…).
 EARLY_RULES = [
+    _B('fastfetch_system_summary',
+       r'^\s*(?:por favor\s+)?(?:ejecuta|corre|run)\s+fastfetch(?:\s+(?:para|y)\s+(?:mostrar|ver|obtener)\w*.*)?\s*[?.!]*$',
+       build_fastfetch,
+       [('ejecuta fastfetch', 'development.execute_command'),
+        ('ejecuta fastfetch para mostrar información de mi sistema', 'development.execute_command')]),
+    _B('code_search', r'\b(?:codigo|code|fragmento|ejemplo(?:s)?)\b.*\b(?:python|javascript|typescript|java|c\+\+|cpp|rust|go|ruby|php|bash|shell|json|github|stack\s+overflow|stackoverflow)\b',
+       build_code_search,
+       [('dame un ejemplo de codigo python para leer json', 'stack_exchange.search_code_examples'),
+        ('busca un ejemplo de codigo python en github', 'github.search_code')]),
     # --- GitHub integration (before site_search to avoid web search fallback)
     _B('github_search', r'\b(?:busca\w*|busca|buscar|search|encuentra)\s+(?:en\s+)?github\s+(.+?)(?:\s+(?:en\s+)?(?:python|javascript|go|rust|java|typescript|cpp|c\+\+|ruby|php|swift|kotlin))?\s*$', build_github_search,
        [('busca en github proyectos python', 'github.search_repositories'), ('busca en github analisis de logs', 'github.search_repositories')]),
@@ -1384,7 +1450,7 @@ EARLY_RULES = [
     _B('calculator', r'\b(?:cuanto es|cuanto es la|calcula|calcula el|calcula la|cuanto es|cuánto es|cuánto es la|cuál es|cual es|evalua|evalúa)\b.*\b(?:\d+|raiz|raíz|sqrt|mas|menos|por|entre|dividido|sumar|restar|multiplicar|dividir)\b', build_calculator,
        [('cuanto es 10 mas 5', 'calculator.evaluate'), ('calcula la raiz cuadrada de 81', 'calculator.evaluate'), ('cuanto es 1500 / 60', 'calculator.evaluate')]),
     # --- context entity storage
-    _B('context_entity', r'\b(?:mi|el|la)\s+\w+(?:\s+\w+)?\s+(?:se llama|es|está|está en)\s+.+', build_context_entity,
+    _B('context_entity', r'\b(?:mi|el|la)\s+[\w]+(?:\s+[\w]+){0,3}?\s+(?:se llama|es|está|está en)\s+.+', build_context_entity,
        [('mi carpeta se llama Fenrir', 'context.set_entity')]),
     _B('server_list', r'\bservidores?\s+(?:activos?|levantados?|corriendo|abiertos?)\b|\b(?:que|cuales|lista\w*|muestra\w*|ver)\b.*\bservidores\b.*\b(?:corriendo|activos|levantados|tengo|hay)\b',
        build_server_list, [('que servidores tengo corriendo', 'networking.list_local_servers'), ('lista los servidores activos', 'networking.list_local_servers')]),
@@ -1643,6 +1709,9 @@ ORIGINAL_RULES = [
          [('mueve a.txt a /tmp', 'filesystem.move'), ('mover', 'ask')]),
     Rule('kill', _all(_rx(r'\b(mata|matar|termina|terminar|kill)\b'), _rx(r'\b(proceso|pid|kill|programa)\b|\b\d{2,9}\b')), build_kill,
          [('mata el proceso 1234', 'processes.terminate'), ('kill proceso', 'ask')]),
+    _B('close_application', r'\b(?:cierra|cerrar|cierre|sal de|salir de|finaliza|finalizar)\b', build_close_application,
+       [('cierra chrome', 'browser.close_application'), ('cierra la aplicación de Spotify', 'browser.close_application'),
+        ('cierra la sesión', 'ask')]),
     _B('kill_by_name', r'\b(?:mata|matar|killall|pkill|termina|terminar|finaliza|finalizar|cierra|cerrar|fuerza el cierre de)\s+\w', build_kill_by_name,
        [('mata firefox', 'processes.terminate_by_name'), ('cierra spotify', 'processes.terminate_by_name'), ('killall chrome', 'processes.terminate_by_name')]),
     Rule('memory_top', _all(_rx(r'\b(ram|memoria)\b'), _rx(r'\b(proceso|procesos|consume|consumen|usar|usando)\b')),
@@ -1667,7 +1736,8 @@ ORIGINAL_RULES = [
          build_network_view, [('muestra las rutas', 'networking.routes'), ('ver interfaces', 'networking.interfaces')]),
     Rule('network_diagnose',
          lambda s, t: bool(re.search(r'\b(conectividad|diagnostica|diagnosticar|diagnostico de red|troubleshoot network)\b', s))
-                      or bool(re.search(r'\b(?:no tengo|no hay|no funciona|se cayo|perdi)\b.{0,30}\binternet\b|\binternet\b.{0,20}\b(?:no funciona|esta caido|fallo)\b', s)),
+                      or (bool(re.search(r'\b(?:no tengo|no hay|no funciona|se cayo|perdi)\b.{0,30}\binternet\b|\binternet\b.{0,20}\b(?:no funciona|esta caido|fallo)\b', s))
+                          and not bool(re.search(r'\bque\s+(?:puedes|puedo)\s+seguir\b|\bque\s+puedes\s+hacer\b', s))),
          _simple('networking', 'diagnose'), [('no tengo internet', 'networking.diagnose')]),
     Rule('tcp_test', _rx(r'\b(tcp|conectar|conexion|connection)\b'), build_tcp,
          [('conectar a 10.0.0.5 puerto 22', 'networking.tcp_test'), ('prueba tcp', 'ask')]),
@@ -1676,7 +1746,16 @@ ORIGINAL_RULES = [
     Rule('search_names', _all(_rx(r'\b(busca|buscar|encuentra|find|search)\b'), _rx(r'\b(archivo|archivos|fichero|ficheros|file|files|nombre)\b')),
          build_search_names, [('busca el archivo informe', 'filesystem.search_names'), ('busca archivo update.log', 'filesystem.search_names')]),
     Rule('system_logs', _all(_rx(r'\b(logs?|registros?)\b'), _not(_rx(r'\bgit\b'))), build_system_logs, [('muestra los logs ultimos 30', 'system.logs')]),
-    Rule('disk_usage', _rx(r'\b(disk usage|espacio (?:libre )?en disco|uso de disco|cuanto espacio libre|cuanto espacio (?:me )?queda|espacio disponible|disco lleno)\b'), build_disk_usage,
+    Rule('disk_hogs',
+         _rx(r'\b(?:que (?:esta )?ocupando espacio|que ocupa(?:n)? mas espacio|carpetas? que mas ocupan|'
+             r'que carpetas? ocupan|donde se va el espacio|largest folders|largest directories|disk hogs)\b'),
+         build_disk_hogs,
+         [('que carpetas ocupan mas espacio', 'system.disk_hogs'),
+          ('que archivos grandes hay en ~/Descargas', 'system.large_files')]),
+    Rule('disk_usage',
+         lambda s, t: bool(re.search(r'\b(disk usage|espacio (?:libre )?en disco|uso de disco|cuanto espacio libre|cuanto espacio (?:me )?queda|espacio disponible|disco lleno)\b', s))
+                      and not bool(re.search(r'\b(?:si\s+)?(?:tengo|hay|dispongo de)\s+\d+(?:[.,]\d+)?\s*(?:bytes?|kib|mib|gib|tib|kb|mb|gb|tb)\b.*\b(?:archivo|fichero)\b.*\b(?:ocupa|pesa|usa|requiere)\s+\d', s)),
+         build_disk_usage,
          [('cuanto espacio libre tengo', 'filesystem.disk_usage'), ('uso de disco del sistema', 'filesystem.disk_usage'), ('cuanto espacio me queda', 'filesystem.disk_usage')]),
     Rule('system_info',
          _all(_rx(r'\b(sistema|hostname|kernel|memoria|cpu|informacion del equipo|info(?:rmacion)? (?:de mi|del) sistema|system info)\b'),

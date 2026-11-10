@@ -1,9 +1,35 @@
 """Stack Exchange API integration for searching Stack Overflow and other sites."""
 import json
 import os
+from html.parser import HTMLParser
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import quote
+
+
+class _CodeBlocks(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.in_pre = False
+        self.current = None
+        self.blocks = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'pre':
+            self.in_pre = True
+            self.current = []
+
+    def handle_endtag(self, tag):
+        if tag == 'pre' and self.in_pre:
+            code = ''.join(self.current or '').strip()
+            if code:
+                self.blocks.append(code[:2000])
+            self.current = None
+            self.in_pre = False
+
+    def handle_data(self, data):
+        if self.in_pre and self.current is not None:
+            self.current.append(data)
 
 
 class StackExchangeIntegration:
@@ -97,6 +123,36 @@ class StackExchangeIntegration:
                 for item in result.get("items", [])
             ],
         }
+
+    def search_code_examples(self, query: str, site: str = "stackoverflow", pagesize: int = 5) -> dict:
+        """Find attributed answer code snippets through the Stack Exchange API."""
+        questions = self.search_questions(query, site, pagesize=min(max(int(pagesize), 1), 10))
+        examples = []
+        for question in questions["results"]:
+            question_id = question.get("question_id")
+            if not question_id:
+                continue
+            answers = self.get_answers(question_id, site)["results"]
+            answers.sort(key=lambda answer: (not answer.get("is_accepted", False), -(answer.get("score") or 0)))
+            for answer in answers:
+                parser = _CodeBlocks()
+                parser.feed(answer.get("body") or "")
+                if not parser.blocks:
+                    continue
+                examples.append({
+                    "title": question.get("title"),
+                    "question_url": question.get("url"),
+                    "question_author": question.get("owner"),
+                    "answer_url": answer.get("url") or f"https://stackoverflow.com/a/{answer['answer_id']}",
+                    "answer_author": answer.get("owner"),
+                    "score": answer.get("score"),
+                    "accepted": answer.get("is_accepted", False),
+                    "code": parser.blocks[:2],
+                })
+                break
+            if len(examples) >= 4:
+                break
+        return {"kind": "code_examples", "query": query, "source": "Stack Overflow", "results": examples}
 
     def get_question(self, question_id: int, site: str = "stackoverflow") -> dict:
         """Get detailed information about a specific question."""
@@ -206,6 +262,11 @@ def search_questions(
     """Search for questions on Stack Exchange."""
     client = _get_client()
     return client.search_questions(query, site, tags, pagesize=pagesize)
+
+
+def search_code_examples(query: str, site: str = "stackoverflow", pagesize: int = 5) -> dict:
+    """Find code examples in attributed Stack Exchange answers."""
+    return _get_client().search_code_examples(query, site, pagesize)
 
 
 def get_question(question_id: int, site: str = "stackoverflow") -> dict:

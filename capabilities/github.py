@@ -1,16 +1,67 @@
 """GitHub API integration for searching repositories, issues, and code."""
 import json
 import os
+from pathlib import Path
+import tempfile
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from urllib.parse import quote
+
+
+def github_token_path() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return config_home / "clibot" / "github.json"
+
+
+def _saved_github_token() -> str | None:
+    try:
+        value = json.loads(github_token_path().read_text(encoding="utf-8")).get("token")
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return None
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def configure_github_token(token: str) -> Path:
+    token = token.strip()
+    if not token or any(char.isspace() for char in token):
+        raise ValueError("El token no puede estar vacío ni contener espacios.")
+    path = github_token_path()
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path.parent, 0o700)
+    fd, temporary = tempfile.mkstemp(prefix=".github-", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            json.dump({"token": token}, stream)
+            stream.write("\n")
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    global _github_client
+    _github_client = GitHubIntegration(token=token)
+    return path
+
+
+def clear_github_token() -> Path:
+    path = github_token_path()
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    global _github_client
+    _github_client = None
+    return path
 
 
 class GitHubIntegration:
     """GitHub API client with optional authentication."""
 
     def __init__(self, token: str | None = None):
-        self.token = token or os.environ.get("GITHUB_TOKEN")
+        self.token = token or os.environ.get("GITHUB_TOKEN") or _saved_github_token()
         self.base_url = "https://api.github.com"
         self.rate_limit_remaining = None
         self.rate_limit_reset = None
@@ -25,7 +76,8 @@ class GitHubIntegration:
             headers["Authorization"] = f"token {self.token}"
         return headers
 
-    def _request(self, endpoint: str, params: dict[str, str] | None = None) -> dict:
+    def _request(self, endpoint: str, params: dict[str, str] | None = None,
+                 headers: dict[str, str] | None = None) -> dict:
         """Make a GET request to GitHub API."""
         url = f"{self.base_url}{endpoint}"
         if params:
@@ -33,7 +85,7 @@ class GitHubIntegration:
             url += f"?{query_string}"
 
         try:
-            request = Request(url, headers=self._get_headers())
+            request = Request(url, headers=headers or self._get_headers())
             with urlopen(request, timeout=10) as response:
                 # Update rate limit info from headers
                 self.rate_limit_remaining = response.headers.get("X-RateLimit-Remaining")
@@ -83,6 +135,31 @@ class GitHubIntegration:
                     "language": item.get("language"),
                     "updated_at": item.get("updated_at"),
                     "license": item.get("license", {}).get("name") if item.get("license") else None,
+                }
+                for item in result.get("items", [])
+            ],
+        }
+
+    def search_code(self, query: str, per_page: int = 5) -> dict:
+        """Search code on GitHub; its code-search API requires authentication."""
+        if not self.token:
+            raise RuntimeError('La búsqueda de código de GitHub requiere un token en GITHUB_TOKEN.')
+        result = self._request(
+            "/search/code",
+            {"q": query, "per_page": min(max(int(per_page), 1), 10)},
+            {**self._get_headers(), "Accept": "application/vnd.github.text-match+json"},
+        )
+        return {
+            "kind": "code_examples",
+            "query": query,
+            "source": "GitHub",
+            "results": [
+                {
+                    "repository": item.get("repository", {}).get("full_name"),
+                    "path": item.get("path"),
+                    "url": item.get("html_url"),
+                    "code": [match.get("fragment", "")[:2000]
+                             for match in item.get("text_matches", []) if match.get("fragment")][:2],
                 }
                 for item in result.get("items", [])
             ],
@@ -201,6 +278,11 @@ def search_repositories(query: str, language: str | None = None, per_page: int =
     """Search for GitHub repositories."""
     client = _get_client()
     return client.search_repositories(query, language, per_page=per_page)
+
+
+def search_code(query: str, per_page: int = 5) -> dict:
+    """Search code on GitHub."""
+    return _get_client().search_code(query, per_page)
 
 
 def search_issues(query: str, per_page: int = 10) -> dict:

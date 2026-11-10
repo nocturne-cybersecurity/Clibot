@@ -29,6 +29,50 @@ def test_translation_understands_country_as_its_main_language():
     assert operation.arguments=={'text':'hola','target_language':'ru'}
 
 
+def test_close_application_uses_known_app_operation_and_requires_confirmation():
+    parser=Parser()
+    operation=parser.parse('cierra chrome').operations[0]
+    assert (operation.capability,operation.name)==('browser','close_application')
+    assert operation.arguments=={'name':'chrome'}
+    assert operation.risk.value=='high'
+    assert parser.parse('cierra la aplicación de Spotify').operations[0].name=='close_application'
+    assert parser.parse('cierra LibreOffice').operations[0].name=='close_application'
+    assert parser.parse('cierra la sesión').operations[0].name=='logout'
+
+
+def test_beginner_explanation_uses_local_model_before_parser():
+    class Model:
+        def is_available(self):
+            return True
+
+        def generate_response(self, _prompt, **_kwargs):
+            return 'Un proceso es un programa que está ejecutándose.'
+
+    assistant=Assistant()
+    assistant.llm=Model()
+    response=assistant.handle('Explícame qué es un proceso en Linux para principiantes.')
+    assert response['message']=='Un proceso es un programa que está ejecutándose.'
+    assert response['reasoning']=='local_model'
+
+
+def test_beginner_explanation_without_model_does_not_search_automatically(monkeypatch):
+    assistant=Assistant()
+    assistant.llm=None
+    monkeypatch.setattr(assistant.executor,'execute',lambda _plan: [])
+    response=assistant.handle('Explícame qué es un proceso en Linux para principiantes.')
+    assert response['message']
+    assert 'modelo de lenguaje activo' in response['message']
+    assert assistant.context.last_plan is None
+
+
+def test_offline_statement_does_not_start_network_diagnostics():
+    assistant=Assistant()
+    assistant.llm=None
+    response=assistant.handle('No tengo Internet.')
+    assert 'Sin Internet' in response['message']
+    assert 'plan' not in response
+
+
 def test_translation_wins_over_calculator_and_accepts_target_before_text():
     parser = Parser()
     phrase = 'traduce "Buenos días a todos en este día tan maravilloso"'
@@ -194,6 +238,276 @@ def test_general_research_only_runs_for_factual_queries():
     assert not Assistant._is_general_question('¿Cómo aprender a programar?')
     assert not Assistant._is_general_question('Escribe un poema sobre calcetines')
     assert Assistant._is_general_question('¿Cómo se llama la capital de Rusia?')
+    assert not Assistant._is_general_question('averigua eso que conversamos sobre el reloj')
+
+
+def test_local_model_is_auto_detected_unless_explicitly_disabled(monkeypatch):
+    import core.assistant as assistant_module
+    available=object()
+    monkeypatch.delenv('CLIBOT_USE_LLM',raising=False)
+    monkeypatch.setattr(assistant_module,'LLMIntegration',lambda:available)
+    assert Assistant().llm is available
+    monkeypatch.setenv('CLIBOT_USE_LLM','false')
+    assert Assistant().llm is None
+
+
+def test_hypothetical_storage_math_does_not_inspect_the_real_disk():
+    for request in ('Si tengo 10 GB libres y un archivo ocupa 3 GB, ¿cuánto espacio me queda?',
+                    '¿Cuánto espacio me queda si tengo 10 GB libres y un archivo ocupa 3 GB?'):
+        response=Assistant().handle(request)
+        assert response['message']=='Te quedarían 7 GB.'
+        assert not response.get('results')
+        parsed=Parser().parse(request)
+        assert not parsed.operations
+
+
+def test_offline_capabilities_question_does_not_run_network_diagnostics():
+    response=Assistant().handle('No tengo conexión a Internet. ¿Qué puedes seguir haciendo por mí?')
+    assert 'archivos locales' in response['message']
+    assert not response.get('plan') and not response.get('results')
+
+
+def test_advice_about_temp_files_does_not_request_a_deletion_target():
+    response=Assistant().handle('Quiero borrar archivos temporales para liberar espacio. ¿Qué debería comprobar primero?')
+    assert 'No borres a ciegas' in response['message']
+    assert 'clarification' not in response
+
+
+def test_disk_hog_request_uses_read_only_folder_scan(monkeypatch):
+    from pathlib import Path
+    assistant=Assistant()
+    observed={}
+    monkeypatch.setitem(assistant.registry.get('system').operations,'disk_hogs',
+                        lambda path,limit: observed.update(path=path,limit=limit) or [{'ruta':'~/Videos','mib':2048}])
+    response=assistant.handle('Necesito saber qué está ocupando espacio en mi equipo. ¿Cómo lo resolverías?')
+    assert response['results'][0].success
+    assert observed=={'path':str(Path.home()),'limit':10}
+    assert response['results'][0].data['value'][0]['ruta']=='~/Videos'
+
+
+def test_project_folder_statement_is_remembered_in_session_context():
+    assistant=Assistant()
+    response=assistant.handle('Mi carpeta de proyectos se llama Fenrir')
+    assert response['message']=='Entendido, carpeta de proyectos es Fenrir. Lo recordaré durante esta sesión.'
+    assert assistant.context.get_entity('carpeta de proyectos')=='Fenrir'
+
+
+def test_code_example_requests_use_search_source_and_return_code(monkeypatch):
+    parser=Parser()
+    operation=parser.parse('necesito un ejemplo de código Python para leer JSON').operations[0]
+    assert (operation.capability,operation.name)==('stack_exchange','search_code_examples')
+    assert operation.arguments['query']=='python read json'
+    github=parser.parse('busca un ejemplo de código Python en GitHub').operations[0]
+    assert (github.capability,github.name)==('github','search_code')
+    assert github.arguments['query']=='python'
+
+    from interface.formatter import _human_value
+    rendered=_human_value({
+        'kind':'code_examples','query':'python json','source':'Stack Overflow','results':[{
+            'title':'Read JSON','answer_author':'Contributor','answer_url':'https://stackoverflow.com/a/1',
+            'code':['import json\njson.loads("{}")'],
+        }],
+    })
+    assert 'import json' in rendered and 'Contributor' in rendered and 'stackoverflow.com/a/1' in rendered
+
+
+def test_code_generation_returns_complete_model_answer_without_search():
+    searches=[]
+    assistant=Assistant()
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt,**kwargs):
+            assert 'código' in prompt
+            assert kwargs['max_tokens']==240
+            return '```python\nimport json\nwith open(\"data.json\", encoding=\"utf-8\") as file:\n    data = json.load(file)\nprint(data)\n```\nGuárdalo como `leer_json.py` y ejecútalo con `python leer_json.py`.'
+    assistant.llm=Model()
+    assistant.registry.get('web').operations['search']=lambda *args,**kwargs:searches.append(args) or {}
+    response=assistant.handle('Dame un ejemplo de código Python completo para leer JSON')
+    assert response['reasoning']=='local_model_code'
+    assert 'json.load(file)' in response['message']
+    assert 'Fuentes' not in response['message']
+    assert searches==[]
+
+
+def test_code_search_only_runs_when_a_source_is_explicitly_requested():
+    assistant=Assistant()
+    assistant.llm=None
+    response=assistant.handle('Busca un ejemplo de código Python en GitHub')
+    assert response['plan'].operations[0].capability=='github'
+    assert response['plan'].operations[0].name=='search_code'
+
+
+def test_troubleshooting_uses_model_and_does_not_trigger_web_search():
+    assistant=Assistant()
+    searches=[]
+    assistant.registry.get('web').operations['search']=lambda *args,**kwargs:searches.append(args) or {}
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt,**kwargs):
+            assert 'no busques en la web' in prompt.lower()
+            return 'Comprueba la ruta con `ls -l archivo`, revisa permisos con `stat archivo` y pega el error completo para identificar la causa.'
+    assistant.llm=Model()
+    response=assistant.handle('Mi script Python falla al abrir un archivo, ¿cómo lo arreglo?')
+    assert response['reasoning']=='local_model_troubleshooting'
+    assert '`stat archivo`' in response['message']
+    assert searches==[]
+
+
+def test_troubleshooting_without_model_asks_for_useful_diagnostic_context():
+    assistant=Assistant()
+    assistant.llm=None
+    response=assistant.handle('Mi programa no funciona, ¿cómo lo soluciono?')
+    assert 'mensaje de error completo' in response['message']
+    assert 'No hice una búsqueda web' in response['message']
+
+
+def test_factual_questions_use_local_model_without_automatic_web_search(monkeypatch):
+    assistant=Assistant()
+    searches=[]
+    monkeypatch.setitem(assistant.registry.get('web').operations,'search',lambda query,**_:
+                        searches.append(query) or {'query':query,'results':[{
+                            'title':'Capital de Francia','url':'https://example.test/paris',
+                            'snippet':'París es la capital de Francia.',
+                        }]})
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt,**kwargs):return 'La capital de Francia es París.'
+    assistant.llm=Model()
+    response=assistant.handle('¿Cómo se llama la capital de Francia?')
+    assert response['message']=='La capital de Francia es París.'
+    assert response['reasoning']=='local_model'
+    assert searches==[]
+
+
+def test_factual_question_does_not_search_web_even_when_local_model_is_available(monkeypatch):
+    assistant=Assistant()
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt,**kwargs):return 'París es la capital de Francia.'
+    assistant.llm=Model()
+    def unavailable(*_args,**_kwargs):
+        raise AssertionError('no automatic search')
+    monkeypatch.setitem(assistant.registry.get('web').operations,'search',unavailable)
+    response=assistant.handle('¿Cuál es la capital de Francia?')
+    assert response['reasoning']=='local_model'
+    assert 'París' in response['message']
+
+
+def test_beginner_explanation_without_model_does_not_search_automatically(monkeypatch):
+    assistant=Assistant()
+    assistant.llm=None
+    searches=[]
+    monkeypatch.setitem(assistant.registry.get('web').operations,'search',
+                        lambda query,**_:searches.append(query) or {'query':query,'results':[]})
+    response=assistant.handle('Explícame qué es un proceso en Linux como si estuviera empezando')
+    assert 'modelo de lenguaje activo' in response['message']
+    assert searches==[]
+
+
+def test_stackoverflow_code_search_extracts_small_attributed_code_blocks():
+    from capabilities.stack_exchange import StackExchangeIntegration
+    client=StackExchangeIntegration()
+    client.search_questions=lambda *args,**kwargs:{'results':[{
+        'question_id':1,'title':'Read JSON','url':'https://stackoverflow.com/q/1','owner':'Question author',
+    }]}
+    client.get_answers=lambda *args,**kwargs:{'results':[{
+        'answer_id':2,'owner':'Answer author','score':4,'is_accepted':True,
+        'body':'<p>Use this:</p><pre><code>import json\njson.loads("{}")</code></pre>',
+    }]}
+    result=client.search_code_examples('python json')
+    assert result['results'][0]['answer_author']=='Answer author'
+    assert result['results'][0]['code']==['import json\njson.loads("{}")']
+    assert result['results'][0]['answer_url']=='https://stackoverflow.com/a/2'
+
+
+def test_github_code_search_requires_token_and_returns_source_links(monkeypatch):
+    from capabilities.github import GitHubIntegration
+    import pytest
+
+    client=GitHubIntegration()
+    with pytest.raises(RuntimeError,match='GITHUB_TOKEN'):
+        client.search_code('python json')
+    client=GitHubIntegration('test-token')
+    observed={}
+    def fake_request(endpoint,params,headers):
+        observed.update(endpoint=endpoint,params=params,headers=headers)
+        return {'total_count':1,'items':[{'repository':{'full_name':'owner/project'},'path':'src/main.py',
+                 'html_url':'https://github.com/owner/project/blob/main/src/main.py',
+                 'text_matches':[{'fragment':'json.loads(data)'}]}]}
+    monkeypatch.setattr(client,'_request',fake_request)
+    result=client.search_code('python json')
+    assert result['results'][0]['code']==['json.loads(data)']
+    assert observed['endpoint']=='/search/code'
+    assert 'text-match' in observed['headers']['Accept']
+
+
+def test_github_token_command_saves_private_credential(monkeypatch, tmp_path):
+    import stat
+    import capabilities.github as github
+    import interface.terminal as terminal_module
+    from interface.terminal import Terminal
+
+    monkeypatch.setenv('XDG_CONFIG_HOME', str(tmp_path))
+    monkeypatch.delenv('GITHUB_TOKEN', raising=False)
+    monkeypatch.setattr(terminal_module.getpass, 'getpass', lambda _prompt: 'ghp_private-test-token')
+    monkeypatch.setattr(terminal_module.sys, 'stdin', type('TTY', (), {'isatty': lambda _self: True})())
+    Terminal(Assistant())._cmd_token('set')
+    assert github.GitHubIntegration().token == 'ghp_private-test-token'
+    assert stat.S_IMODE(github.github_token_path().stat().st_mode) == 0o600
+
+
+def test_help_lists_token_and_model_commands():
+    from interface.terminal import COMMANDS
+    names={name for name, _args, _description in COMMANDS}
+    assert {'/help','/token','/models'} <= names
+
+
+def test_models_command_selects_only_installed_model(monkeypatch):
+    from interface.terminal import Terminal
+
+    terminal=Terminal(Assistant())
+    selected=[]
+    monkeypatch.setattr(terminal, '_ollama_models', lambda: [{'name':'llama3.2'}])
+    monkeypatch.setattr(terminal, '_save_ollama_model', selected.append)
+    terminal._cmd_models('use llama3.2')
+    assert selected == ['llama3.2']
+    terminal._cmd_models('use missing')
+    assert selected == ['llama3.2']
+
+
+def test_models_pull_stream_selects_downloaded_model(monkeypatch):
+    import io
+    from interface.terminal import Terminal
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    terminal=Terminal(Assistant())
+    selected=[]
+    monkeypatch.setattr('interface.terminal.urlopen', lambda request, timeout: (
+        selected.append((json.loads(request.data), timeout)) or
+        Response(b'{"status":"pulling","total":10,"completed":5}\n{"status":"success"}\n')
+    ))
+    monkeypatch.setattr(terminal, '_save_ollama_model', selected.append)
+    terminal._cmd_models('pull llama3.2')
+    assert selected[0][0] == {'name':'llama3.2','stream':True}
+    assert selected[1] == 'llama3.2'
+
+
+def test_safe_system_summary_command_needs_no_confirmation(monkeypatch):
+    from capabilities.development import _clean_terminal_output
+    assert _clean_terminal_output('\x1b[31minfo\x1b[0m\x1b[1G')=='info'
+    assistant=Assistant(confirm=lambda _: (_ for _ in ()).throw(AssertionError('fastfetch is read-only')))
+    monkeypatch.setitem(assistant.registry.get('development').operations,'execute_command',
+                        lambda command,**_: {'exit_code':0,'stdout':'system summary','stderr':''})
+    response=assistant.handle('ejecuta fastfetch')
+    assert response['results'][0].success
+    assert response['results'][0].data['value']['stdout']=='system summary'
+    assert Parser().parse('ejecuta fastfetch para mostrar información de mi sistema').operations[0].arguments['command']=='fastfetch'
 
 
 def test_compound_spoken_math_preserves_precedence_and_square_root():
@@ -259,12 +573,13 @@ def test_failed_calculation_followup_explains_the_actual_cause():
 
 def test_repeat_and_search_detail_followups_use_recent_context(monkeypatch):
     assistant=Assistant()
+    assistant.llm=None
     queries=[]
     def fake_search(query,**_):
         queries.append(query)
         return {'query':query,'provider':'test','results':[{'title':'Resultado','url':'https://example.test','snippet':'Rusia fue parte de tres estados históricos.'}]}
     monkeypatch.setitem(assistant.registry.get('web').operations,'search',fake_search)
-    assistant.handle('¿Cuál es la capital de Rusia?')
+    assistant.handle('Busca en la web cuál es la capital de Rusia')
     assistant.handle('una de las 3 que?')
     assert len(queries)==2 and 'una de las 3 que' in queries[-1]
     repeated=assistant.handle('repítelo')
@@ -273,6 +588,7 @@ def test_repeat_and_search_detail_followups_use_recent_context(monkeypatch):
 
 def test_creative_requests_are_not_misrouted_to_web_or_system_tools():
     assistant=Assistant()
+    assistant.llm=None
     for request in ('Inventa un deporte nuevo en la Luna','Explícame la física cuántica como si tuviera 5 años y amara los dinosaurios',
                     'Escribe un poema épico sobre un calcetín perdido','Imagina que eres un pirata en internet'):
         response=assistant.handle(request)
@@ -304,10 +620,12 @@ def test_file_listing_and_file_search_do_not_become_web_queries():
         assert all(op.capability=='filesystem' for op in plan.operations)
 
 
-def test_open_ended_response_uses_configured_model_without_proposing_tools(monkeypatch):
+def test_open_ended_response_uses_configured_model_without_proposing_tools():
     assistant=Assistant()
-    monkeypatch.setattr(assistant.llm,'is_available',lambda:True)
-    monkeypatch.setattr(assistant.llm,'generate_response',lambda prompt:'Una respuesta creativa breve.')
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt):return 'Una respuesta creativa breve.'
+    assistant.llm=Model()
     response=assistant.handle('Inventa un deporte nuevo en la Luna')
     assert response['message']=='Una respuesta creativa breve.'
     assert response['reasoning']=='local_model'
@@ -345,28 +663,29 @@ def test_followup_summarizes_last_operation_without_dumping_raw_system_data():
     assert 'hostname' not in followup['message']
 
 
-def test_general_fact_questions_search_web_and_followups_use_session_memory(monkeypatch):
+def test_explicit_web_search_and_followups_use_session_memory(monkeypatch):
     assistant=Assistant(confirm=lambda _: 'yes')
+    assistant.llm=None
     searches=[]
     def fake_search(query,**_):
         searches.append(query)
         return {'query':query,'provider':'test','results':[{'title':'Capital de Perú','url':'https://example.test/peru','snippet':'La capital de Perú es Lima.'}]}
     monkeypatch.setitem(assistant.registry.get('web').operations,'search',fake_search)
 
-    found=assistant.handle('Cuál es la capital de Perú')
+    found=assistant.handle('Busca en la web cuál es la capital de Perú')
     assert found['results'][0].success
     assert found['plan'].operations[0].capability=='web'
-    assert searches==['Cuál es la capital de Perú']
+    assert searches==['cuál es la capital de Perú']
 
     repeated=assistant.handle('pues búscalo')
     assert repeated['results'][0].success
-    assert searches[-1]=='Cuál es la capital de Perú'
+    assert searches[-1]=='cuál es la capital de Perú'
     explanation=assistant.handle('eso qué')
     assert 'La capital de Perú es Lima.' in explanation['message']
     assert 'https://' not in explanation['message']
     continued=assistant.handle('No quiero que abras el navegador, quiero que lo busques e investigues, parece que no puedes hacer nada')
     assert continued['results'][0].success
-    assert searches[-1]=='Cuál es la capital de Perú'
+    assert searches[-1]=='cuál es la capital de Perú'
 
 
 def test_plain_history_word_is_a_terminal_command(monkeypatch,capsys):
@@ -387,15 +706,15 @@ def test_interactive_terminal_reveals_messages_with_a_short_animation(monkeypatc
         def isatty(self):
             return True
 
-    assistant=Assistant()
-    terminal=Terminal(assistant)
     output=TTY()
     pauses=[]
     monkeypatch.setattr('interface.terminal.sys.stdout',output)
     monkeypatch.setattr('interface.terminal.time.sleep',lambda seconds:pauses.append(seconds))
-    terminal._print_message('LLMAH  ¡Hola!')
-    assert output.getvalue()=='LLMAH  ¡Hola!\n'
-    assert pauses and sum(pauses)<=0.9
+    terminal=Terminal(Assistant())
+    terminal.paginate_mode=False
+    terminal._emit('primera línea\nsegunda línea')
+    assert 0<len(pauses)<=2
+    assert all(0<=delay<=0.03 for delay in pauses)
 
 
 def test_animation_is_disabled_for_silent_and_json_output(monkeypatch):
@@ -406,16 +725,16 @@ def test_animation_is_disabled_for_silent_and_json_output(monkeypatch):
         def isatty(self):
             return True
 
-    terminal=Terminal(Assistant())
     output=TTY()
     monkeypatch.setattr('interface.terminal.sys.stdout',output)
     monkeypatch.setattr('interface.terminal.time.sleep',lambda *_:(_ for _ in ()).throw(AssertionError('animation should be off')))
+    terminal=Terminal(Assistant())
+    terminal.paginate_mode=False
     terminal.silent_mode=True
-    terminal._print_message('quiet')
+    terminal._emit('quiet')
     terminal.silent_mode=False
     terminal.json_mode=True
-    terminal._print_message('{"ok": true}')
-    assert output.getvalue()=='quiet\n{"ok": true}\n'
+    terminal._emit('{"ok": true}')
 
 
 def test_terminal_table_respects_narrow_width(monkeypatch):
@@ -495,4 +814,3 @@ def test_web_fallback_and_interface_improvements():
     rendered = format_response({'clarification': 'No entendí.'})
     assert 'LLMAH' in rendered
     assert 'No entendí.' in rendered
-

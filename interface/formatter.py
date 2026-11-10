@@ -1,5 +1,5 @@
 """Readable terminal formatting using portable ANSI colors and aligned tables."""
-import os, sys, shutil, textwrap
+import os, sys, shutil, textwrap, unicodedata
 import re
 
 try:
@@ -16,6 +16,12 @@ _CODES={'cyan':'36','blue':'34','green':'32','yellow':'33','red':'31','muted':'2
 def paint(value,color):
     text=str(value)
     return f"\033[{_CODES[color]}m{text}\033[0m" if _COLOR and color in _CODES else text
+
+
+def _safe_terminal_text(value):
+    text=re.sub(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\].*?(?:\x07|\x1B\\))','',str(value))
+    return ''.join(char for char in text
+                   if unicodedata.category(char) not in {'Cc','Cf'} or char in '\t\n')
 
 
 def highlight_code(text, language=None):
@@ -63,42 +69,34 @@ def _table(rows):
 
 def _human_value(value, capability=None):
     if isinstance(value,dict):
+        if value.get('kind')=='code_examples':
+            rows=value.get('results') or []
+            if not rows:return f"No encontré fragmentos de código para «{value.get('query','')}» en {value.get('source','las fuentes')}."
+            language_match=re.search(r'\b(python|javascript|typescript|java|cpp|rust|go|ruby|php|bash|shell)\b',
+                                     str(value.get('query','')),re.I)
+            language=language_match.group(1).lower() if language_match else None
+            lines=[f"Ejemplos para «{value.get('query','')}» · fuente: {value.get('source','')}"]
+            for row in rows[:4]:
+                if value.get('source')=='GitHub':
+                    lines.append(f"\n{row.get('repository','')}/{row.get('path','')}")
+                    if row.get('url'):lines.append(f"Fuente: {row['url']}")
+                else:
+                    lines.append(f"\n{row.get('title','Ejemplo')}")
+                    author=row.get('answer_author') or row.get('question_author')
+                    if author:lines.append(f"Respuesta atribuida a {_safe_terminal_text(author)}.")
+                    if row.get('answer_url'):lines.append(f"Fuente: {row['answer_url']}")
+                for snippet in row.get('code',[])[:2]:
+                    lines.append(highlight_code(_safe_terminal_text(snippet[:2000]),language))
+            if value.get('source')=='Stack Overflow':
+                lines.append('\nLicencia: CC BY-SA; conserva la atribución al reutilizar el código.')
+            elif value.get('source')=='GitHub':
+                lines.append('\nComprueba la licencia del repositorio antes de reutilizar el código.')
+            return '\n'.join(lines)
         if 'query' in value and 'results' in value:
             rows=value['results']
             if not rows:return f"No encontré resultados para «{value['query']}»."
-            
-            # Presentación mejorada de resultados de búsqueda
-            query = value['query']
-            num_results = len(rows)
-            
-            # Mostrar resumen del mejor resultado
             primary=next((row for row in rows if row.get('snippet')),rows[0])
-            snippet = primary.get('snippet') or primary.get('title') or ''
-            
-            # Construir respuesta con contexto
-            lines = []
-            lines.append(f"Encontré {num_results} resultado{'s' if num_results > 1 else ''} para «{query}»:")
-            lines.append("")
-            
-            # Mostrar el mejor resultado destacado
-            if snippet:
-                lines.append(paint('📌 Mejor resultado:', 'yellow'))
-                lines.append(f"  {snippet[:300]}{'...' if len(snippet) > 300 else ''}")
-                if primary.get('url'):
-                    lines.append(f"  {paint(primary['url'], 'cyan')}")
-                lines.append("")
-            
-            # Mostrar otros resultados relevantes
-            if num_results > 1:
-                lines.append(paint('📚 Otras fuentes:', 'yellow'))
-                for i, row in enumerate(rows[1:4], 1):  # Máximo 3 adicionales
-                    title = row.get('title', 'Sin título')
-                    url = row.get('url', '')
-                    lines.append(f"  {i}. {title[:60]}{'...' if len(title) > 60 else ''}")
-                    if url:
-                        lines.append(f"     {paint(url, 'cyan')}")
-            
-            return '\n'.join(lines)
+            return str(primary.get('snippet') or primary.get('title') or 'Encontré resultados, pero no incluyen un resumen.').strip()
         if 'exit_code' in value and ('stdout' in value or 'stderr' in value):
             output=value.get('stdout','').rstrip()
             error=value.get('stderr','').rstrip()
@@ -147,7 +145,9 @@ def _human_value(value, capability=None):
 def format_response(response):
     if response.get('message'):return _wrap(paint('LLMAH','magenta')+'  '+response['message'])
     if response.get('clarification'):return _wrap(paint('LLMAH','magenta')+'  '+response['clarification'])
-    if response.get('error'):return _wrap(paint('Validación fallida:','red')+f" {response['error']}")
+    if response.get('error'):
+        label='Error del modelo:' if response.get('error_category')=='model_error' else 'Validación fallida:'
+        return _wrap(paint(label,'red')+f" {response['error']}")
     lines=[]
     for result in response.get('results',[]):
         if result.success:
@@ -156,7 +156,7 @@ def format_response(response):
                 lines.append(paint('✓','green')+' '+paint('Listo','green'))
             value=result.data.get('value') if isinstance(result.data,dict) else None
             if result.data.get('capabilities'):
-                summaries={'system':'hora/fecha, RAM, CPU/GPU, identidad, carpeta actual, información y logs','filesystem':'listar, leer, buscar, crear, mover, copiar, comprimir y calcular hashes','networking':'interfaces, rutas, DNS, pruebas TCP y puertos locales en escucha','services':'consultar servicios y cambiar su estado con confirmación','browser':'abrir aplicaciones y páginas en un escritorio disponible','web':'buscar en la web y mostrar una respuesta breve','translation':'traducir texto con Google y alternativa si hay limitación (requiere internet)','development':'Python, Git y comandos explícitos confirmados','cybersecurity':'DNS, RDAP/WHOIS, disponibilidad de Nmap, escaneos autorizados e informes','calculator':'aritmética, raíces, potencias y funciones comunes'}
+                summaries={'system':'hora/fecha, RAM, CPU/GPU, identidad, carpeta actual, información y logs','filesystem':'listar, leer, buscar, crear, mover, copiar, comprimir y calcular hashes','networking':'interfaces, rutas, DNS, ping, traceroute, pruebas TCP y puertos locales en escucha','services':'consultar servicios y cambiar su estado con confirmación','browser':'abrir y cerrar aplicaciones conocidas y abrir páginas en un escritorio disponible','web':'buscar en la web y mostrar una respuesta breve','translation':'traducir texto con Google y alternativa si hay limitación (requiere internet)','development':'Python, Git y comandos explícitos confirmados','cybersecurity':'DNS, RDAP/WHOIS, disponibilidad de Nmap, escaneos autorizados e informes','calculator':'aritmética, raíces, potencias y funciones comunes'}
                 for cap in result.data['capabilities']:
                     description=summaries.get(cap['name'])
                     if description:lines.append(f"  {paint(cap['name'],'cyan')}  {description}")
@@ -178,7 +178,7 @@ def format_response(response):
 
 def _wrap(message):
     """Keep prose in a calm, readable column instead of stretching across wide terminals."""
-    width=max(50,min(100,shutil.get_terminal_size((80,24)).columns-8))
+    width=max(32,min(100,shutil.get_terminal_size((80,24)).columns-8))
     output=[]
     for line in message.splitlines():
         if not line:
