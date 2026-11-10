@@ -59,7 +59,7 @@ Si prefieres configurar todo manualmente:
 
 ```bash
 git clone https://github.com/nocturne-cybersecurity/Clibot.git
-cd CLIBOT
+cd Clibot
 ```
 
 #### Paso 2: Crear el Entorno Virtual e Instalar Dependencias
