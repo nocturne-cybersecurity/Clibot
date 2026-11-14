@@ -62,6 +62,13 @@ class Assistant:
     def _handle(self,request):
         phrase=normalize(request).strip(' .!?¿¡')
 
+        if self._is_malicious_security_request(request):
+            return {'request':request,'message':
+                    'Eso es un ataque malicioso y no lo hago. En cambio puedo ayudarte con la defensa: '
+                    '«auditoria ssh», «intentos de acceso fallidos», «postura del firewall», '
+                    '«herramientas de seguridad», «pentest a <ip>», «bloquea la ip <ip>», «recopila evidencia», '
+                    '«entrenamiento phishing», «cumplimiento iso 27001».'}
+
         if re.search(r'\b(?:que|cual)\b.*\b(?:semana|numero de semana)\b|\ben que semana estamos\b',phrase):
             iso=datetime.now().date().isocalendar()
             return {'request':request,'message':f'Estamos en la semana {iso.week} del año {iso.year} (semana ISO).'}
@@ -369,13 +376,47 @@ class Assistant:
             return {'request':request,'message':
                     'No hay un modelo de lenguaje activo para elaborar una explicación completa. '
                     'Activa Ollama con /models; buscaré en la web solo si me lo pides expresamente.'}
+        if self._is_security_question(request):
+            if self.llm and self.llm.is_available():
+                try:
+                    answer=self.llm.generate_response(
+                        'Eres un experto en ciberseguridad defensiva y pentesting autorizado. Responde en español '
+                        'con conocimiento práctico y preciso: explica conceptos, compara opciones, da pasos '
+                        'concretos de hardening, detección, respuesta a incidentes, auditoría y buenas prácticas. '
+                        'Cuando sea útil, sugiere comandos reales que el usuario puede pedirme ejecutar (por '
+                        'ejemplo «auditoria ssh», «intentos de acceso fallidos», «postura del firewall», '
+                        '«herramientas de seguridad», «pentest a <ip>», «bloquea la ip <ip>», «recopila evidencia»). '
+                        'No ayudes a crear ataques maliciosos; si el tema roza lo ofensivo, redirige a la defensa. '
+                        'No inventes herramientas, CVEs ni datos: si no estás seguro, dilo. '
+                        +self._recent_context()+'PREGUNTA: '+request[:700],
+                        max_tokens=220,
+                    ).strip()
+                    if answer:return {'request':request,'message':answer[:4000],'reasoning':'local_model_security'}
+                except RuntimeError as exc:
+                    return {'request':request,'message':f'No pude consultar el modelo local: {exc}'}
+            return {'request':request,'message':
+                    'Para responder con profundidad sobre ciberseguridad necesito un modelo de lenguaje activo. '
+                    'Activa Ollama con /models. Mientras tanto puedo ejecutar auditorías reales: «auditoria ssh», '
+                    '«intentos de acceso fallidos», «postura del firewall», «herramientas de seguridad».'}
         plan=self.parser.parse(request,self.context)
         plan_message=getattr(plan,'message',None)
         if plan.reformat_last:
             return self._reformat_last(request)
+        if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible'):
+            code_result=self._llm_code_to_file(request)
+            if code_result is not None:
+                return code_result
         if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible') and self._is_open_ended_request(request):
-            model_error=None
             if self.llm and self.llm.is_available():
+                try:
+                    model_result=self._interpret_with_model(request)
+                    if model_result is not None:
+                        return model_result
+                except RuntimeError:
+                    pass
+                except Exception as exc:
+                    return {'request':request,'error':str(exc),'error_category':'model_error'}
+                model_error=None
                 try:
                     message=self.llm.generate_response(
                         'Responde en español, en menos de 70 palabras. '
@@ -386,8 +427,8 @@ class Assistant:
                     if message.strip():return {'request':request,'message':message.strip()[:1500],'reasoning':'local_model'}
                 except RuntimeError as exc:
                     model_error=str(exc)
-            if model_error:
-                return {'request':request,'error':model_error,'error_category':'model_error'}
+                if model_error:
+                    return {'request':request,'error':model_error,'error_category':'model_error'}
             return {'request':request,'message':'Para inventar o desarrollar una respuesta abierta necesito un modelo de lenguaje activo. No voy a convertir esa petición creativa en una búsqueda web.'}
         if plan.clarification and plan.clarification.startswith('No reconocí una tarea compatible'):
             if self._is_general_question(request):
@@ -447,7 +488,10 @@ class Assistant:
         try:self.validator.validate(plan)
         except Exception as e:return {'request':request,'error':str(e),'results':[]}
         results=self.executor.execute(plan); self.context.remember(request,results,plan)
-        return {'request':request,'plan':plan,'results':results}
+        response={'request':request,'plan':plan,'results':results}
+        analysis=self._analyze_results(request,plan,results)
+        if analysis:response['analysis']=analysis
+        return response
 
     @staticmethod
     def _is_general_question(request):
@@ -459,6 +503,65 @@ class Assistant:
             return False
         if Assistant._is_open_ended_request(normalized):return False
         return True
+
+    def _llm_code_to_file(self,request):
+        """If the user asks to program/develop something and save it to a file,
+        have the local LLM write the code and store it via filesystem.write."""
+        if not (self.llm and self.llm.is_available()):
+            return None
+        if not re.search(r'\b(programa|programar|desarrolla|desarrollar|implementa|implement\w*|codifica|escribe un (?:programa|script)|crea un (?:programa|script))\b',normalize(request)):
+            return None
+        path_match=re.search(r'(/[\w./~ -]+|[\w.-]+\.(?:py|js|sh|bash|c|cpp|h|java|rb|go|rs|php|html|css|sql|json|yaml|yml|toml|md|txt))',request)
+        if not path_match:
+            return None
+        path=path_match.group(1).strip()
+        try:
+            code=self.llm.generate_response(
+                'Genera SOLO el código fuente solicitado, completo y funcional, sin explicaciones ni markdown. '
+                'Entrega únicamente el código.\nPETICIÓN: '+request[:600],
+                max_tokens=600,
+            )
+            code=code.strip()
+            code=re.sub(r'^```[a-zA-Z]*\s*','',code)
+            code=re.sub(r'\s*```$','',code).strip()
+            if not code or len(code)<20:
+                return None
+            plan=Plan([Operation('filesystem','write',{'path':path,'content':code},
+                                 description=f'guardar el código generado en {path}',risk=Risk.MODERATE)],request)
+            self.validator.validate(plan)
+            results=self.executor.execute(plan)
+            self.context.remember(request,results,plan)
+            return {'request':request,'plan':plan,'results':results,'reasoning':'local_model_codegen'}
+        except Exception:
+            return None
+
+    def _analyze_results(self,request,plan,results):
+        """Ask the local LLM to interpret real operation output (security/data ops
+        or explicit analysis requests). Returns a short Spanish analysis or None."""
+        if not (self.llm and self.llm.is_available()):
+            return None
+        interesting=any(op.capability in {'cybersecurity','security_audit','monitoring'} for op in plan.operations)
+        wants=bool(re.search(r'\b(analisis|analiza|analizar|resumen|informe|explica|por\s*que|qué significa|que significa)\b',normalize(request)))
+        if not (interesting or wants):
+            return None
+        blob=[]
+        for r in results[:4]:
+            text=(r.stdout or '') or (str(r.data)[:800] if r.data else '') or (r.stderr or '')
+            if text:
+                blob.append(text[:1200])
+        if not blob:
+            return None
+        try:
+            from security.redaction import redact
+            answer=self.llm.generate_response(
+                'Eres un analista de ciberseguridad. Resume en español, en menos de 120 palabras, '
+                'qué muestran estos resultados reales del sistema y qué acciones recomiendas. '
+                'No inventes datos que no estén en el texto.\nRESULTADOS:\n'+redact('\n---\n'.join(blob))[:3000],
+                max_tokens=220,
+            )
+            return answer.strip()[:2000] or None
+        except Exception:
+            return None
 
     def _recent_context(self):
         turns=[]
@@ -508,7 +611,9 @@ class Assistant:
             r'\b(?:dame|genera|generame|escribe|crea|comparte|comparteme|implementa|necesito|quiero)\b',
             normalized,
         ))
-        code_topic=bool(re.search(r'\b(?:codigo|script|funcion|programa|ejemplo)\b',normalized))
+        code_topic=bool(re.search(
+            r'\b(?:codigo|script|funcion|programa|ejemplo|calculadora|aplicacion|app|bot|juego|'
+            r'pagina|sitio web|cli|dashboard|herramienta)\b',normalized))
         return asks_for_code and code_topic
 
     @staticmethod
@@ -529,6 +634,35 @@ class Assistant:
             normalized,
         ))
         return problem and context
+
+    @staticmethod
+    def _is_malicious_security_request(request):
+        normalized=normalize(request)
+        terms=r'(?:ransomware|ddos|denegaci[oó]n de servicio|malware|troyano|spyware|keylogger|botnet|rootkit|virus|gusano|phishing|smishing|vishing|zero-?day)'
+        actions=r'\b(?:crea|crear|haz|hacer|lanza|lanzar|despliega|desplegar|instala|instalar|genera|generar|envia|enviar|manda|mandar|ejecuta|ejecutar|necesito|quiero|roba|robar|extrae|extraer|exfiltra|exfiltrar|cifra|cifrar|secuestra|secuestrar|filtra|filtrar|inyecta|inyectar)\b'
+        defensive=r'\b(?:protege|proteger|protecci[oó]n|defensa|defender|detecta|detectar|detecci[oó]n|previene|prevenir|prevenci[oó]n|entrenamiento|concienciaci[oó]n|explica|qu[eé] es|c[oó]mo funciona|auditor[ií]a|an[aá]lisis|mitiga|mitigar|recupera|recuperar|defiende|bloquea)\b'
+        if (re.search(actions+r'[^.]{0,80}'+terms,normalized)
+                or re.search(terms+r'[^.]{0,80}'+actions,normalized)):
+            return not re.search(defensive,normalized)
+        return bool(re.search(
+            r'\b(?:roba|extrae|exfiltra|cifra|secuestra|filtra|vaza)\b[^.]{0,60}'
+            r'\b(?:datos|credenciales|tarjetas?|contraseñas|contrasenas|informaci[oó]n confidencial|bases? de datos)\b',
+            normalized))
+
+    @staticmethod
+    def _is_security_question(request):
+        normalized=normalize(request).strip(' .!?¿¡')
+        if not re.search(
+            r'\b(?:ciberseguridad|seguridad|pentest|vulnerabilidad|firewall|intruso|intrusi[oó]n|ataque|malware|'
+            r'phishing|ransomware|encriptaci[oó]n|vpn|ids|ips|siem|cumplimiento|iso ?27001|nist|hackeo|hacker|'
+            r'exploit|zero-?day|backdoor|botnet|hardening|fail2ban)\b',normalized):
+            return False
+        if re.search(r'\b(?:protege|proteger|protecci[oó]n|defiende|defender|blindar|endurecer|mitiga|mitigar|'
+                     r'prevenir|prevenci[oó]n|refuerza|reforzar|audita|auditar)\b',normalized):
+            return True
+        return bool(re.search(
+            r'^\s*(?:qu[eé]|c[oó]mo|por ?qu[eé]|cu[aá]l|cu[aá]les|diferencia|explica|ens[eé][nñ]a|what|how|why|'
+            r'which|explain|dime|h[aá]blame|ayuda|ay[uú]dame)\b',normalized))
 
     @staticmethod
     def _is_open_ended_request(request):
@@ -665,6 +799,54 @@ class Assistant:
         match=re.search(r'```[\w+-]*\n(.*?)```',answer,re.S)
         return match.group(1) if match else None
 
+    def _resolve_model_operation(self,capability_name,operation_name):
+        """Resolve a model-proposed capability/operation pair.
+
+        Small local models sometimes swap the two fields or use an operation
+        name as the capability (e.g. ``python_version`` instead of
+        ``development``/``python_version``). Recover only unambiguous matches;
+        otherwise raise a clear error instead of a raw ``KeyError``.
+        """
+        def canonical_capability(name):
+            needle=name.strip().casefold()
+            for capability in self.registry.list():
+                if capability.name.casefold()==needle:
+                    return capability
+            return None
+
+        def operation_owners(name):
+            needle=name.strip().casefold()
+            found=[]
+            for capability in self.registry.list():
+                for operation in capability.operations:
+                    if operation.casefold()==needle:
+                        found.append((capability.name,operation))
+                        break
+            return found
+
+        capability=canonical_capability(capability_name)
+        if capability is not None:
+            needle=operation_name.strip().casefold()
+            for operation in capability.operations:
+                if operation.casefold()==needle:
+                    return capability.name,operation
+            owners=operation_owners(operation_name)
+            if len(owners)==1:
+                return owners[0]
+            raise ValueError(f'El modelo propuso una operación no registrada: {capability_name}.{operation_name}.')
+        owners=operation_owners(capability_name)
+        if len(owners)==1:
+            resolved_capability,resolved_operation=owners[0]
+            needle=operation_name.strip().casefold()
+            for operation in self.registry.get(resolved_capability).operations:
+                if operation.casefold()==needle:
+                    return resolved_capability,operation
+            return resolved_capability,resolved_operation
+        owners=operation_owners(operation_name)
+        if len(owners)==1:
+            return owners[0]
+        raise ValueError(f'El modelo propuso una operación no registrada: {capability_name}.{operation_name}.')
+
     def _interpret_with_model(self,request):
         catalog=[]
         for capability in self.registry.list():
@@ -694,7 +876,7 @@ class Assistant:
                 'question':self.context.pending.get('question',''),
                 'user_followup':request,
             }
-        if not self.llm:
+        if not self.llm or not hasattr(self.llm,'interpret_request'):
             return None
         choice = self.llm.interpret_request(request,catalog,summary)
         kind=choice['kind']
@@ -724,9 +906,8 @@ class Assistant:
             arguments=item.get('arguments',{})
             if not isinstance(capability_name,str) or not isinstance(operation_name,str) or not isinstance(arguments,dict):
                 raise ValueError('El modelo devolvió capacidad, operación o argumentos no válidos.')
+            capability_name,operation_name=self._resolve_model_operation(capability_name,operation_name)
             capability=self.registry.get(capability_name)
-            if operation_name not in capability.operations:
-                raise ValueError(f'El modelo propuso una operación no registrada: {capability_name}.{operation_name}.')
             indexes=item.get('depends_on',[])
             if not isinstance(indexes,list) or any(not isinstance(dep,int) or isinstance(dep,bool) or dep<0 or dep>=index for dep in indexes):
                 raise ValueError('El modelo propuso dependencias inválidas.')

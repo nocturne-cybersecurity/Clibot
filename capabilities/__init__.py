@@ -1,7 +1,7 @@
 """Registration of implemented capabilities. Importing registers metadata only."""
 from discovery.capability_registry import Capability, registry
-from . import filesystem as fs, system, networking, services, development, browser, processes, translation, web_search, package_manager, monitoring, automation, github, stack_exchange
-from .cybersecurity import scanners, reconnaissance, reporting
+from . import filesystem as fs, system, networking, services, development, browser, processes, translation, web_search, package_manager, monitoring, automation, github, stack_exchange, security_audit
+from .cybersecurity import scanners, reconnaissance, reporting, defense, incident, training, traffic
 
 def _add(name, description, operations, schemas, risks=None):
     registry.register(Capability(name,description,operations,schemas,risks or {k:'read_only' for k in operations}))
@@ -95,12 +95,40 @@ _add('development','Local Python and Git operations',{
  'git_branch':{'properties':{'path':'path'}},'git_diff':{'properties':{'path':'path','file':'string'}},'git_log':{'properties':{'path':'path','limit':'integer'}},
  'git_add':{'writes':True,'required':['path'],'properties':{'path':'path','files':'array'}},'git_commit':{'writes':True,'required':['path','message'],'properties':{'path':'path','message':'string'}},'git_push':{'writes':True,'required':['path'],'properties':{'path':'path','remote':'string','branch':'string'}},'git_pull':{'writes':True,'required':['path'],'properties':{'path':'path','remote':'string','branch':'string'}},'git_merge':{'writes':True,'required':['path','branch'],'properties':{'path':'path','branch':'string'}},'git_rebase':{'writes':True,'required':['path','branch'],'properties':{'path':'path','branch':'string'}},'git_checkout':{'writes':True,'required':['path','branch_or_commit'],'properties':{'path':'path','branch_or_commit':'string'}},'git_stash':{'writes':True,'properties':{'path':'path'}},'git_list_conflicts':{'properties':{'path':'path'}},'git_abort_merge':{'writes':True,'properties':{'path':'path'}}},
  {'run_python':'high','execute_command':'high','open_file':'moderate','git_init':'moderate','git_clone':'moderate','git_add':'moderate','git_commit':'moderate','git_checkout':'high','git_push':'high','git_pull':'high','git_merge':'high','git_rebase':'high'})
-_add('cybersecurity','Authorized security inspection and reporting',{
- 'scan':scanners.scan,'resolve_dns':reconnaissance.resolve,'whois_lookup':reconnaissance.whois_lookup,'scanner_status':scanners.availability,'report':reporting.report},
+_add('cybersecurity','Authorized security inspection, defense and reporting',{
+ 'scan':scanners.scan,'resolve_dns':reconnaissance.resolve,'whois_lookup':reconnaissance.whois_lookup,'scanner_status':scanners.availability,'report':reporting.report,
+ 'firewall_status':defense.firewall_status,'failed_logins':defense.failed_logins,'pending_updates':defense.pending_updates,
+ 'exposed_services':defense.exposed_services,'password_policy':defense.password_policy,'ssh_exposure':defense.ssh_exposure,
+ 'tools_status':defense.tools_status,'block_ip':incident.block_ip,'unblock_ip':incident.unblock_ip,
+ 'collect_evidence':incident.collect_evidence,'phishing_awareness':training.phishing_awareness,
+ 'password_hygiene':training.password_hygiene,'compliance_checklist':training.compliance_checklist,
+ 'capture_traffic':traffic.capture,'inspect_capture':traffic.inspect},
  {'scan':{'required':['target','authorized'],'properties':{'target':'string','ports':'string','timeout':'integer','authorized':'boolean'}},
   'resolve_dns':{'required':['host'],'properties':{'host':'string'}},'whois_lookup':{'required':['target'],'properties':{'target':'string','timeout':'integer'}},'scanner_status':{'properties':{}},
-  'report':{'required':['title','scope','findings','output'],'properties':{'title':'string','scope':'string','findings':'array','output':'path','format':'string'}}},
- {'scan':'high','resolve_dns':'low','report':'moderate'})
+  'report':{'required':['title','scope','findings','output'],'properties':{'title':'string','scope':'string','findings':'array','output':'path','format':'string'}},
+  'failed_logins':{'properties':{'hours':'integer'}},'block_ip':{'required':['ip'],'properties':{'ip':'string','permanent':'boolean'}},
+  'unblock_ip':{'required':['ip'],'properties':{'ip':'string'}},
+  'collect_evidence':{'properties':{'output_dir':'path','hours':'integer'}},
+  'capture_traffic':{'required':['interface'],'properties':{'interface':'string','duration':'integer','output':'path'}},
+  'inspect_capture':{'required':['path'],'properties':{'path':'path'}},
+  'firewall_status':{'properties':{}},'pending_updates':{'properties':{}},'exposed_services':{'properties':{}},
+  'password_policy':{'properties':{}},'ssh_exposure':{'properties':{}},'tools_status':{'properties':{}},
+  'phishing_awareness':{'properties':{}},'password_hygiene':{'properties':{}},'compliance_checklist':{'properties':{}}},
+ {'scan':'high','resolve_dns':'low','report':'moderate','block_ip':'high','unblock_ip':'high','collect_evidence':'moderate',
+  'capture_traffic':'moderate','inspect_capture':'low'})
+_add('security_audit','Local security auditing and forensic analysis',{
+ 'ssh_audit':security_audit.ssh_audit,'scan_secrets':security_audit.scan_secrets,'find_suid_sgid':security_audit.find_suid_sgid,
+ 'check_rootkits':security_audit.check_rootkits,'certificate_info':security_audit.certificate_info,
+ 'list_certificates':security_audit.list_certificates,'basic_sast':security_audit.basic_sast,
+ 'forensic_timeline':security_audit.forensic_timeline,'file_integrity_check':security_audit.file_integrity_check},
+ {'ssh_audit':{'properties':{}},'scan_secrets':{'properties':{'path':'path','max_files':'integer'}},
+  'find_suid_sgid':{'properties':{}},'check_rootkits':{'properties':{}},
+  'certificate_info':{'required':['cert_path'],'properties':{'cert_path':'path'}},
+  'list_certificates':{'properties':{'path':'path'}},'basic_sast':{'properties':{'path':'path','max_files':'integer'}},
+  'forensic_timeline':{'properties':{'days':'integer'}},
+  'file_integrity_check':{'properties':{'path':'path','algorithm':'string'}}},
+ {'find_suid_sgid':'high','check_rootkits':'high','scan_secrets':'moderate','basic_sast':'moderate',
+  'forensic_timeline':'moderate','file_integrity_check':'moderate'})
 _add('browser','Desktop browser and application control',{'open_url':browser.open_url,'open_application':browser.open_application,'close_application':browser.close_application},{'open_url':{'required':['url'],'properties':{'url':'string','browser':'string'}},'open_application':{'required':['name'],'properties':{'name':'string','command':'string'}},'close_application':{'required':['name'],'properties':{'name':'string'}}},{'open_url':'moderate','open_application':'low','close_application':'high'})
 _add('translation','Translate explicitly supplied text using Google Translate',{'translate':translation.translate},{'translate':{'required':['text','target_language'],'properties':{'text':'string','target_language':'string','source_language':'string','timeout':'integer'}}},{'translate':'moderate'})
 _add('web','Search the web and show results in the terminal',{'search':web_search.search},{'search':{'required':['query'],'properties':{'query':'string','limit':'integer','timeout':'integer'}}},{'search':'low'})

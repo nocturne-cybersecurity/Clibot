@@ -173,6 +173,10 @@ def format_response(response):
             lines.append(paint('✗ '+category.capitalize(),'red'))
             if result.stderr:lines.append('  '+_compact_error(result.stderr))
             if result.error_category=='missing_dependency':lines.append(paint('  Instala la herramienta con el gestor de paquetes de tu distribución.','muted'))
+    if response.get('analysis'):
+        lines.append('')
+        lines.append(paint('Análisis del modelo:','cyan'))
+        lines.append(response['analysis'])
     return _wrap('\n'.join(lines) if lines else paint('No se ejecutó ninguna operación.','muted'))
 
 

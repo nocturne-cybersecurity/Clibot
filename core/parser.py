@@ -622,13 +622,70 @@ def build_nmap(s, text, ctx):
     target = _target(text)
     if not target:
         return _ask(text, 'Indica el objetivo autorizado (IP o nombre de host).')
-    if not re.search(r'\b(autorizado|authorized|mi laboratorio|my lab|tengo permiso)\b', s):
-        return _ask(text, 'Confirma que tienes autorización explícita para escanear el objetivo indicado.')
-    args = {'target': target, 'authorized': True}
+    args = {'target': target, 'authorized': True}  # ejecución directa, sin confirmación de alcance
     ports = re.search(r'(?i)(?:puerto|port|ports)\s+([\d,-]+)', s)
     if ports:
         args['ports'] = ports.group(1)
     return _plan(text, _op('cybersecurity', 'scan', args, Risk.HIGH, 'escaneo Nmap de alcance autorizado', timeout=900))
+
+
+def _ip_arg(text):
+    m = re.search(r'(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])', text)
+    return m.group(0) if m else None
+
+
+def build_block_ip(s, text, ctx):
+    ip = _ip_arg(text)
+    if not ip:
+        return _ask(text, 'Indica la IP a bloquear (solo contra objetivos autorizados).')
+    return _plan(text, _op('cybersecurity', 'block_ip', {'ip': ip, 'permanent': True},
+                           Risk.HIGH, f'bloquear la IP {ip} en el firewall'))
+
+
+def build_unblock_ip(s, text, ctx):
+    ip = _ip_arg(text)
+    if not ip:
+        return _ask(text, 'Indica la IP a desbloquear.')
+    return _plan(text, _op('cybersecurity', 'unblock_ip', {'ip': ip},
+                           Risk.HIGH, f'desbloquear la IP {ip}'))
+
+
+def build_collect_evidence(s, text, ctx):
+    args = {}
+    path = _path(text)
+    if path:
+        args['output_dir'] = path
+    hours = re.search(r'(\d+)\s*(?:h|horas?|hours?)\b', s)
+    if hours:
+        args['hours'] = int(hours.group(1))
+    return _plan(text, _op('cybersecurity', 'collect_evidence', args, Risk.MODERATE,
+                           'recopilar evidencia del incidente'))
+
+
+def build_capture_traffic(s, text, ctx):
+    iface = re.search(r'\b(eth\d+|enp\w+|wlan\w+|wlp\w+|any|lo)\b', s)
+    dur = re.search(r'(\d+)\s*(?:s|seg|segundos?|seconds?)\b', s)
+    args = {'interface': iface.group(1) if iface else 'any'}
+    if dur:
+        args['duration'] = min(60, int(dur.group(1)))
+    wants_analysis = bool(re.search(r'\b(analisis|analiza|analizar|informe|reporte|resumen|resume|dame un analisis)\b', s))
+    if wants_analysis:
+        args['output'] = '/tmp/llmah-capture.pcap'
+        return _plan(text,
+                     _op('cybersecurity', 'capture_traffic', args, Risk.MODERATE,
+                         f"capturar tráfico de red en {args['interface']}"),
+                     _op('cybersecurity', 'inspect_capture', {'path': args['output']}, Risk.READ_ONLY,
+                         'analizar la captura resultante'))
+    return _plan(text, _op('cybersecurity', 'capture_traffic', args, Risk.MODERATE,
+                           f"capturar tráfico de red en {args['interface']}"))
+
+
+def build_inspect_capture(s, text, ctx):
+    path = _path(text)
+    if not path:
+        return _ask(text, 'Indica la ruta del archivo de captura (.pcap). Ejemplo: «analiza la captura /tmp/llmah-capture.pcap»')
+    return _plan(text, _op('cybersecurity', 'inspect_capture', {'path': path}, Risk.READ_ONLY,
+                           f'analizar la captura {path}'))
 
 
 # ---- archivos ----------------------------------------------------------------
@@ -1620,6 +1677,12 @@ EARLY_RULES = [
          build_open, [('busca gatos en youtube', 'browser.open_url'), ('busca nginx en github', 'browser.open_url')]),
     Rule('exec_command', _rx(r'\b(ejecuta(?:\s+este)?(?:\s+el)?\s+comando|corre(?:\s+el)?\s+comando|run(?: the)? command|command:)'),
          build_exec_command, [('ejecuta el comando uptime', 'development.execute_command')]),
+    # --- auditoría de seguridad local (antes del «buscar → web.search» genérico)
+    _R('suid_early', r'\b(suid|sgid)\b', 'security_audit', 'find_suid_sgid', ['buscar suid', 'buscar archivos sgid'], 'buscar archivos SUID/SGID', Risk.HIGH),
+    _R('rootkit_early', r'\b(rootkits?)\b', 'security_audit', 'check_rootkits', ['revisa rootkits', 'buscar rootkits']),
+    _R('secrets_early', r'\b(secretos|secrets|scan secrets|credenciales expuestas)\b', 'security_audit', 'scan_secrets', ['busca secretos', 'buscar secretos en .']),
+    _R('ssh_audit_early', r'\b(ssh audit|auditoria ssh|auditoría ssh)\b', 'security_audit', 'ssh_audit', ['auditoria ssh']),
+    _R('sast_early', r'\b(sast|analisis estatico|análisis estático|codigo vulnerable|código vulnerable)\b', 'security_audit', 'basic_sast', ['analisis estatico de .']),
 ]
 
 
@@ -1815,7 +1878,8 @@ NEW_RULES = [
 # Reglas originales (con sinónimos añadidos y varias reordenadas: «cambia…» ya no las roba «edit»)
 # ---------------------------------------------------------------------------
 ORIGINAL_RULES = [
-    Rule('nmap', lambda s, t: (bool(re.search(r'\bnmap\b', s)) or _remote_scan(s, t)) and not re.search(r'\b(?:instala\w*|install)\b', s), build_nmap,
+    Rule('nmap', lambda s, t: (bool(re.search(r'\bnmap\b', s)) or _remote_scan(s, t)) and not re.search(r'\b(?:instala\w*|install)\b', s)
+           and not re.search(r'\b(trafico|tráfico|paquetes|packets)\b', s), build_nmap,
          [('escanea puertos de 10.0.0.5 autorizado', 'cybersecurity.scan'), ('nmap a 10.0.0.5', 'ask'), ('nmap', 'ask')]),
     Rule('listening_ports',
          lambda s, t: (bool(re.search(r'\bpuertos?\b', s)) and (bool(re.search(r'\b(abiertos?|listening|escanea|escanear|scan|quiero|muestra|mostrar|ver|dame)\b', s))
@@ -1934,7 +1998,8 @@ ORIGINAL_RULES = [
          [('ejecuta el script python /tmp/a.py', 'development.run_python'), ('corre el script', 'ask')]),
     Rule('capabilities_generic', _rx(r'^(?:capacidades|capabilities|ayuda|help)$'), _simple('assistant', 'capabilities'),
          [('capacidades', 'assistant.capabilities')]),
-    Rule('late_scan', _rx(r'\b(scan|escanea|escanear)\b'), build_late_scan, [('escanea', 'ask')]),
+    Rule('late_scan', lambda s, t: bool(re.search(r'\b(scan|escanea|escanear)\b', s))
+         and not re.search(r'\b(trafico|tráfico|paquetes|packets)\b', s), build_late_scan, [('escanea', 'ask')]),
     Rule('env_vars', _rx(r'\b(variables de entorno|environment variables|env)\b'), _simple('system', 'environment_variables'),
          [('variables de entorno', 'system.environment_variables')]),
     Rule('hardware', _rx(r'\b(hardware|cpu|gpu|discos|temperaturas)\b'), _simple('system', 'hardware_info'),
@@ -1947,6 +2012,40 @@ ORIGINAL_RULES = [
     Rule('http_request', _rx(r'\b(http request|solicitud http)\b'), build_http, [('http request https://example.com', 'networking.http_request')]),
     Rule('speed_test', _rx(r'\b(speed test|velocidad|test de velocidad)\b'), _simple('networking', 'speed_test', timeout=120),
          [('test de velocidad', 'networking.speed_test')]),
+    Rule('pentest', _rx(r'\b(pentest|pentesting|prueba de penetraci[oó]n|simulacro de (?:ataque|intrusi[oó]n))\b'), build_nmap,
+         [('pentest a 10.0.0.5', 'cybersecurity.scan'), ('pentest', 'ask')]),
+    Rule('failed_logins', _rx(r'\b(intentos? de acceso fallidos?|accesos fallidos|failed logins?|fuerza bruta|brute force|intentos de intrusi[oó]n)\b'),
+         _simple('cybersecurity', 'failed_logins'), [('intentos de acceso fallidos', 'cybersecurity.failed_logins')]),
+    Rule('pending_updates', _rx(r'\b(actualizaciones pendientes|parches pendientes|updates pendientes|vulnerabilidades sin parchar|paquetes desactualizados)\b'),
+         _simple('cybersecurity', 'pending_updates'), [('actualizaciones pendientes', 'cybersecurity.pending_updates')]),
+    Rule('exposed_services', _rx(r'\b(servicios expuestos|puertos abiertos|puertos escuchando|exposed services|superficie de ataque)\b'),
+         _simple('cybersecurity', 'exposed_services'), [('servicios expuestos', 'cybersecurity.exposed_services')]),
+    Rule('sec_tools', _rx(r'\b(herramientas de seguridad|herramientas (?:de )?pentest|security tools|que herramientas de seguridad)\b'),
+         _simple('cybersecurity', 'tools_status'), [('herramientas de seguridad', 'cybersecurity.tools_status')]),
+    Rule('password_policy', _rx(r'\b(politica de contrasenas?|politica de passwords?|password policy)\b'),
+         _simple('cybersecurity', 'password_policy'), [('politica de contraseñas', 'cybersecurity.password_policy')]),
+    Rule('ssh_exposure', _rx(r'\b(exposici[oó]n ssh|ssh expuesto|ssh hardening|hardening ssh)\b'),
+         _simple('cybersecurity', 'ssh_exposure'), [('exposicion ssh', 'cybersecurity.ssh_exposure')]),
+    Rule('firewall_posture', _rx(r'\b(postura del firewall|estado del firewall|firewall status)\b'),
+         _simple('cybersecurity', 'firewall_status'), [('postura del firewall', 'cybersecurity.firewall_status')]),
+    Rule('block_ip', _all(_rx(r'\b(bloquea|bloquear|block)\b'), _rx(r'\b(ip|direcci[oó]n|address)\b')), build_block_ip,
+         [('bloquea la ip 10.0.0.9', 'cybersecurity.block_ip'), ('bloquea ip', 'ask')]),
+    Rule('unblock_ip', _all(_rx(r'\b(desbloquea|desbloquear|unblock)\b'), _rx(r'\b(ip|direcci[oó]n)\b')), build_unblock_ip,
+         [('desbloquea la ip 10.0.0.9', 'cybersecurity.unblock_ip')]),
+    Rule('collect_evidence', _rx(r'\b(recopila|recoger|re[uú]ne|collect)\b.*\b(evidencia|evidencias|logs)\b'), build_collect_evidence,
+         [('recopila evidencia del incidente', 'cybersecurity.collect_evidence')]),
+    Rule('capture_traffic', _all(_rx(r'\b(captura|capturar|capture|graba|grabacion|sniff|intercepta|escanea|escanear|scan)\b'),
+                                 _rx(r'\b(trafico|tráfico|paquetes|packets)\b')), build_capture_traffic,
+         [('captura trafico durante 10 segundos', 'cybersecurity.capture_traffic'), ('captura el trafico', 'cybersecurity.capture_traffic')]),
+    Rule('inspect_capture', _all(_rx(r'\b(analiza|analisis|inspecciona|inspeccion|resume|resumir|informe|revisa)\b'),
+                                 _rx(r'\b(captura|capture|pcap|trafico|tráfico)\b')), build_inspect_capture,
+         [('analiza la captura /tmp/x.pcap', 'cybersecurity.inspect_capture'), ('analiza el trafico', 'ask')]),
+    Rule('phishing_training', _rx(r'\b(phishing|concienciaci[oó]n|entrenamiento|capacitaci[oó]n|awareness)\b'),
+         _simple('cybersecurity', 'phishing_awareness'), [('entrenamiento phishing', 'cybersecurity.phishing_awareness')]),
+    Rule('password_hygiene', _rx(r'\b(higiene de contrasenas?|buenas pr[aá]cticas de contrasenas?|password hygiene)\b'),
+         _simple('cybersecurity', 'password_hygiene'), [('higiene de contraseñas', 'cybersecurity.password_hygiene')]),
+    Rule('compliance', _rx(r'\b(cumplimiento|compliance|iso ?27001|nist|auditor[ií]a de cumplimiento)\b'),
+         _simple('cybersecurity', 'compliance_checklist'), [('cumplimiento iso 27001', 'cybersecurity.compliance_checklist')]),
     Rule('firewall', _rx(r'\b(firewall|cortafuegos)\b'), _simple('networking', 'firewall_status'), [('estado del firewall', 'networking.firewall_status')]),
     Rule('vpn', _rx(r'\b(vpn)\b'), _simple('networking', 'vpn_status'), [('estado de la vpn', 'networking.vpn_status')]),
     Rule('process_temps', _rx(r'\b(temperature)\b'), _simple('processes', 'process_temperatures'), [('process temperature', 'processes.process_temperatures')]),

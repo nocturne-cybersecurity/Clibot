@@ -666,11 +666,19 @@ class Terminal:
             if self._pager(text):
                 return
         if self._animate and len(lines) <= 40:
-            delay = min(0.03, 0.6 / len(lines))
+            # Typewriter: reveal the text letter by letter (~1.2s total).
+            # ANSI codes are stripped while typing so escapes never split mid-sequence;
+            # the final frame restores the fully formatted text.
+            plain = re.sub(r'\x1B(?:\[[0-?]*[ -/]*[@-~]|\].*?(?:\x07|\x1B\\))', '', text)
+            total = len(plain)
+            frames = min(180, max(2, total // 2))
+            step = max(1, -(-total // frames))
+            delay = min(0.01, 1.2 / frames)
             with Live(console=self.console, refresh_per_second=60, vertical_overflow='visible') as live:
-                for i in range(1, len(lines) + 1):
-                    live.update(self._gutter('\n'.join(lines[:i])))
+                for i in range(step, total + 1, step):
+                    live.update(self._gutter(plain[:i]))
                     time.sleep(delay)
+                live.update(self._gutter(text))
         else:
             self.console.print(self._gutter(text))
 
@@ -888,8 +896,29 @@ class Terminal:
             self.console.print(Text(f'  Velocidad: {status["rate"]} palabras/min', style=DIM))
             self.console.print(Text(f'  Volumen: {status["volume"]}', style=DIM))
             return
-        
-        self.console.print(Text('  Uso: /voice on | /voice off | /voice list | /voice use <perfil> | /voice status', style=DIM))
+
+        if action.startswith('rate '):
+            try:
+                rate = int(action[5:].strip())
+            except ValueError:
+                self.console.print(Text('  Uso: /voice rate <80-400>', style=ERR))
+                return
+            self._tts.set_rate(rate)
+            self.console.print(Text(f'  Velocidad ajustada a {rate} palabras/min.', style=OK))
+            return
+
+        if action == 'voices':
+            voices = self._tts.list_available_voices()
+            if not voices:
+                self.console.print(Text('  No se pudieron listar las voces del sistema.', style=ERR))
+                return
+            self.console.print(Text('  Voces del sistema (espeak):', style=ACCENT))
+            for vid, vname in voices:
+                self.console.print(Text(f'  - {vid}: {vname}', style=DIM))
+            self.console.print(Text('  Usa: /voice use <id>', style=DIM))
+            return
+
+        self.console.print(Text('  Uso: /voice on | /voice off | /voice list | /voice use <perfil|id> | /voice rate <n> | /voice voices | /voice status', style=DIM))
 
     def _cmd_keys(self, arg):
         """Manage API keys."""

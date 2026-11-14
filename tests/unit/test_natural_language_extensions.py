@@ -703,6 +703,37 @@ def test_calculator_code_request_uses_model_not_a_prebuilt_template():
     assert 'Código generado para la calculadora' in response['message']
 
 
+def test_create_calculator_request_generates_code_with_model():
+    assistant=Assistant()
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,prompt,**kwargs):
+            assert 'calculadora' in prompt
+            return '```python\ndef suma(a,b):\n    return a+b\n```'
+        def interpret_request(self,*_args,**_kwargs):
+            raise AssertionError('code request should not reach the operation interpreter')
+    assistant.llm=Model()
+    response=assistant.handle('Crea una calculadora con python')
+    assert response['reasoning']=='local_model_code'
+    assert 'def suma' in response['message']
+
+
+def test_model_operation_name_used_as_capability_is_recovered():
+    assistant=Assistant()
+    class Model:
+        def is_available(self):return True
+        def generate_response(self,*_args,**_kwargs):return ''
+        def interpret_request(self,request,capabilities,context):
+            return {'kind':'operations','operations':[{
+                'capability':'python_version','operation':'python_version','arguments':{},
+                'description':'consultar la versión de Python','depends_on':[]}]}
+    assistant.llm=Model()
+    response=assistant.handle('haz algo que no tenga sentido')
+    assert response['plan'].operations[0].capability=='development'
+    assert response['plan'].operations[0].name=='python_version'
+    assert response['results'][0].success
+
+
 def test_vague_code_request_asks_what_to_build_instead_of_generic_chitchat():
     response=Assistant().handle('Genera codigo')
     assert response['clarification']=='¿Qué debe hacer el código y en qué lenguaje?'
@@ -937,8 +968,9 @@ def test_interactive_terminal_reveals_messages_with_a_short_animation(monkeypatc
     terminal=Terminal(Assistant())
     terminal.paginate_mode=False
     terminal._emit('primera línea\nsegunda línea')
-    assert 0<len(pauses)<=2
-    assert all(0<=delay<=0.03 for delay in pauses)
+    assert pauses
+    assert all(0<delay<=0.01 for delay in pauses)
+    assert sum(pauses)<=1.3
 
 
 def test_animation_is_disabled_for_silent_and_json_output(monkeypatch):

@@ -17,7 +17,7 @@ dependencies = [
 dev = ["pytest>=8"]
 postgres = ["psycopg2-binary>=2.9.0"]
 voice = ["vosk>=0.3.45"]
-tts = ["pyttsx3>=2.90"]
+tts = ["pyttsx3>=2.90", "piper-tts>=1.2"]
 
 [project.scripts]
 llmah = "llmah:main"

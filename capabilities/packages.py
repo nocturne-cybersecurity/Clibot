@@ -18,26 +18,21 @@ def search(query):
     return subprocess.run(args,capture_output=True,text=True,timeout=20).stdout[:20000]
 
 def install(package_names, assume_yes=False):
-    """Install packages (requires root)."""
-    if os.geteuid() != 0:
-        raise PermissionError('Package installation requires root privileges')
-    
+    """Install packages; uses sudo -S (password on demand) when not root."""
+    from capabilities.package_manager import _sudo_run
     m = manager()
     if not m:
         raise FileNotFoundError('No supported package manager found')
-    
     if isinstance(package_names, str):
         package_names = [package_names]
-    
     cmd_map = {
         'apt': ['apt-get', 'install', '-y'] if assume_yes else ['apt-get', 'install'],
         'dnf': ['dnf', 'install', '-y'] if assume_yes else ['dnf', 'install'],
         'pacman': ['pacman', '-S', '--noconfirm'] if assume_yes else ['pacman', '-S'],
         'zypper': ['zypper', 'install', '-y'] if assume_yes else ['zypper', 'install']
     }
-    
     cmd = cmd_map[m] + package_names
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = _sudo_run(cmd, 300)
     
     return {
         'packages': package_names,

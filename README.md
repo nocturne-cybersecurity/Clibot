@@ -165,6 +165,22 @@ clibot --command "git push origin main"
 ```
 Pull, push, checkout, merge y rebase requieren confirmación; init, clone, add y commit se ejecutan según la ruta y los cambios que indiques. Para commit, primero prepara los archivos con `git add`; los errores de Git se muestran en vez de tratarse como éxito.
 
+### Ciberseguridad
+```bash
+clibot --command "postura del firewall"
+clibot --command "intentos de acceso fallidos"
+clibot --command "servicios expuestos"
+clibot --command "herramientas de seguridad"
+clibot --command "auditoria ssh"
+clibot --command "buscar suid"
+clibot --command "pentest a 192.168.1.10"
+clibot --command "bloquea la ip 10.0.0.9"
+clibot --command "recopila evidencia del incidente en /tmp/evid"
+clibot --command "entrenamiento phishing"
+clibot --command "cumplimiento iso 27001"
+```
+CLIBOT actúa como experto en ciberseguridad **defensiva**: auditorías, monitoreo, respuesta a incidentes, pentesting autorizado, hardening, concienciación y cumplimiento. Si una herramienta falta (nmap, tcpdump, etc.) te lo indica y puedes instalarla con `instala <paquete>`. Las solicitudes de ataques maliciosos (ransomware, phishing, DDoS, robo de datos) se rechazan.
+
 ### Comandos Multi-línea
 Para comandos largos, usa `\` al final de la línea:
 ```bash
@@ -193,7 +209,9 @@ Dentro del modo interactivo de `clibot`, dispones de comandos útiles:
 - `/models`: Muestra modelos instalados y abre el catálogo en línea de Ollama; escribe un número para descargar uno. `/models search <texto>` filtra el catálogo; `/models pull <modelo[:variante]>` descarga y selecciona, y `/models use <modelo>` cambia entre los instalados. El catálogo requiere Internet.
 - `/micro on|off`: Activa o desactiva dictado de comandos en español con Vosk local. Mientras escucha, puedes hablar o escribir `/micro off`; también puedes decir «micro off» o pulsar Ctrl+C. El audio no se guarda ni se envía por Internet.
 - `/mic list|use`: Lista o cambia el modelo de reconocimiento de voz (similar a `/models`).
-- `/voice on|off|list|use`: Activa/desactiva respuesta de voz, lista perfiles disponibles o cambia la voz TTS. Por defecto usa una voz de mujer joven.
+- `/voice on|off|list|use`: Activa/desactiva respuesta de voz, lista perfiles disponibles o cambia la voz TTS. Por defecto usa voz en español.
+- `/voice rate <80-400>`: Ajusta la velocidad de la voz (palabras/minuto).
+- `/voice voices`: Lista las voces reales del sistema (espeak-ng); `/voice use <id>` permite usar cualquiera (p. ej. `roa/es`, `gmw/en-us`).
 - `/keys list|set|clear <servicio>`: Gestiona API keys para OpenAI, GitHub, Stack Exchange, Anthropic, Google, etc.
 
 **Configuración del micrófono:**
@@ -250,25 +268,32 @@ pip install openai-whisper
 La integración con Whisper en CLIBOT requiere configuración adicional. Los modelos Whisper varían desde ~70 MB (base) hasta ~10 GB (large), con soporte nativo para múltiples idiomas y mejor reconocimiento de nombres técnicos.
 
 **Configuración de respuesta de voz (TTS):**
-Para que CLIBOT responda con voz, instala pyttsx3:
+Para que CLIBOT responda con voz, instala pyttsx3 y Piper (voz neuronal, mucho más natural):
 ```bash
 pip install -e '.[tts]'
 ```
 Luego activa la respuesta de voz con `/voice on`.
 
-**Perfiles de voz disponibles:**
-- `default` - Mujer joven (voz predeterminada)
-- `female_young` - Mujer joven
-- `female_adult` - Mujer adulta
-- `male_young` - Hombre joven
-- `male_adult` - Hombre adulto
+CLIBOT usa **Piper** (síntesis neuronal offline) si hay modelos en `~/.cache/clibot/piper/`; si no, cae a espeak-ng (robótico). Modelos en español descargados:
+- `es_ES-sharvard-medium` — 2 hablantes: `:0` hombre, `:1` mujer (España)
+- `es_ES-davefx-medium` — hombre, España
+- `es_MX-ald-medium` — hombre, México
+- `es_MX-claude-high` — hombre, México, **alta calidad**
+
+**Voces disponibles (perfiles con nombre):**
+- `carla` (alias: `default`, `female_young`) - mujer joven, España, rápida
+- `elena` (alias: `female_adult`) - mujer adulta, España, más pausada
+- `ramiro` (alias: `male_young`) - hombre, España (davefx)
+- `diego` (alias: `male_adult`) - hombre, México (ald)
+
+También puedes usar cualquier modelo crudo: `/voice use es_MX-claude-high` o `/voice use es_ES-sharvard-medium:1` (el `:N` elige el hablante en modelos multi-speaker). `/voice voices` lista todas las voces disponibles.
 
 **Comandos para gestionar la voz:**
 ```bash
 /voice on              # Activar respuesta de voz
 /voice off             # Desactivar respuesta de voz
 /voice list            # Ver perfiles disponibles
-/voice use female_young  # Cambiar a perfil específico
+/voice use carla       # Cambiar a perfil específico
 /voice status          # Ver estado actual (voz, velocidad, volumen)
 ```
 
