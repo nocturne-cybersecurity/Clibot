@@ -9,6 +9,22 @@ def _check_command(cmd):
     return shutil.which(cmd) is not None
 
 
+def _sudo_run(cmd, timeout):
+    """Run a command that needs root; asks for the sudo password only when required."""
+    import os
+    if not (hasattr(os, 'geteuid') and os.geteuid() != 0) or not shutil.which('sudo'):
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    if subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode == 0:
+        return subprocess.run(['sudo', *cmd], capture_output=True, text=True, timeout=timeout)
+    import getpass
+    try:
+        password = getpass.getpass('[sudo] Contraseña: ')
+    except (EOFError, KeyboardInterrupt):
+        password = ''
+    return subprocess.run(['sudo', '-S', *cmd], input=password + '\n',
+                          capture_output=True, text=True, timeout=timeout)
+
+
 def apt_search(query):
     """Search for packages using apt."""
     if not _check_command('apt'):
@@ -27,7 +43,7 @@ def apt_install(packages, assume_yes=False):
     if assume_yes:
         cmd.append('-y')
     cmd.extend(packages if isinstance(packages, list) else [packages])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = _sudo_run(cmd, 300)
     return {'success': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr, 'packages': packages}
 
 
@@ -39,7 +55,7 @@ def apt_remove(packages, assume_yes=False):
     if assume_yes:
         cmd.append('-y')
     cmd.extend(packages if isinstance(packages, list) else [packages])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    result = _sudo_run(cmd, 300)
     return {'success': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr, 'packages': packages}
 
 
@@ -47,7 +63,7 @@ def apt_update():
     """Update package lists using apt."""
     if not _check_command('apt'):
         raise FileNotFoundError('apt command not found')
-    result = subprocess.run(['apt', 'update'], capture_output=True, text=True, timeout=300)
+    result = _sudo_run(['apt', 'update'], 300)
     return {'success': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr}
 
 
@@ -58,7 +74,7 @@ def apt_upgrade(assume_yes=False):
     cmd = ['apt', 'upgrade']
     if assume_yes:
         cmd.append('-y')
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    result = _sudo_run(cmd, 600)
     return {'success': result.returncode == 0, 'stdout': result.stdout, 'stderr': result.stderr}
 
 

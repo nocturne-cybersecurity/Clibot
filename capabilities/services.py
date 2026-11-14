@@ -34,8 +34,17 @@ def _systemctl(args, sudo=False, timeout=20):
         raise FileNotFoundError('systemctl is unavailable on this system')
     cmd = [exe, *args]
     if sudo and os.geteuid() != 0 and shutil.which('sudo'):
-        cmd = ['sudo', '-n', *cmd]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        p = subprocess.run(['sudo', '-n', *cmd], capture_output=True, text=True, timeout=timeout)
+        if p.returncode and re.search(r'authentication|permission|denied|password|a password is required', p.stderr, re.I):
+            import getpass
+            try:
+                password = getpass.getpass('[sudo] Contraseña: ')
+            except (EOFError, KeyboardInterrupt):
+                password = ''
+            p = subprocess.run(['sudo', '-S', *cmd], input=password + '\n',
+                               capture_output=True, text=True, timeout=timeout)
+    else:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return {'exit_code': p.returncode, 'stdout': p.stdout.strip(), 'stderr': p.stderr.strip()}
 
 

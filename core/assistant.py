@@ -13,6 +13,7 @@ from core.error_handler import handle_error
 from core.audit_logger import AuditLogger
 from intelligence.dialogue import respond as dialogue_response
 from intelligence.llm_integration import LLMIntegration
+from memory.persistent_memory import PersistentMemory
 
 class Assistant:
     def __init__(self,confirm=input):
@@ -20,12 +21,16 @@ class Assistant:
         self.config=load_config(); self.registry=registry; self.parser=Parser(); self.validator=Validator(registry); self.context=Context(); self.auto_open_terminal=False; self._input_confirm=confirm
         self.executor=Executor(registry,self._confirm,self.config['settings'].get('execution',{}).get('default_yes_operations',()),
                                self.config['policies'].get('risk',{}))
+        # El usuario pidió ejecución directa: ninguna operación pide confirmación.
+        # La única credencial que se solicita es la contraseña de sudo cuando un
+        # comando la necesita (se pide dentro de development.execute_command).
+        self.executor.confirmation_policy={key:False for key in self.executor.confirmation_policy}
         # Detect a local Ollama model automatically; remote providers still need
         # explicit configuration inside LLMIntegration.
         configured_llm=self.config['settings'].get('model',{}).get('enabled','auto')
         use_llm = os.environ.get('CLIBOT_USE_LLM',str(configured_llm)).strip().lower()
         self.llm = None if use_llm in {'false', '0', 'off', 'no'} else LLMIntegration()
-        self.llm_timeout = 10.0
+        self.memory = PersistentMemory()
         self.audit_logger = AuditLogger()
     def _confirm(self,prompt):
         if self.auto_open_terminal and prompt.startswith('Confirm abrir una terminal (moderate)?'):return 'yes'
@@ -37,6 +42,14 @@ class Assistant:
             error_details = handle_error(exc, context=request)
             response={'request':request,'error':error_details,'error_category':'internal_error'}
         self.context.record_exchange(request,response)
+        try:
+            success=not response.get('error') and all(r.success for r in response.get('results',[]))
+            self.memory.add_history_entry(request,{'message':response.get('message') or response.get('clarification') or '',
+                                                   'operations':[{'capability':op.capability,'name':op.name}
+                                                                 for op in (response.get('plan').operations if response.get('plan') else [])]},
+                                       success=success)
+        except Exception:
+            pass
         # Log to audit logger
         operations = []
         if 'operations' in response:
@@ -86,6 +99,10 @@ class Assistant:
         storage_answer=self._answer_hypothetical_storage_question(request)
         if storage_answer:
             return {'request':request,'message':storage_answer}
+
+        hardware_answer=self._answer_hardware_question(request)
+        if hardware_answer:
+            return {'request':request,'message':hardware_answer}
 
         if re.search(r'\b(?:borrar|eliminar|limpiar)\b.*\btemporales?\b',phrase) and re.search(
                 r'\b(?:que|primero|antes|deberia|debo|comprobar|revisar)\b',phrase):
@@ -276,10 +293,15 @@ class Assistant:
                         'incluye bloque de código, instrucciones mínimas para usarla y dependencias necesarias. '
                         'No afirmes que la probaste ni añadas enlaces o fuentes salvo que se pidan. '
                         'Si falta un requisito esencial, haz una pregunta breve. '
+                        'No inventes funciones, APIs ni detalles internos que no conozcas. '
                         +self._recent_context()+'PETICIÓN: '+request[:500],
                         max_tokens=320,
                     ).strip()
-                    if answer:return {'request':request,'message':answer[:6000],'reasoning':'local_model_code'}
+                    if answer:
+                        saved=self._maybe_save_generated_code(request,answer)
+                        if saved is not None:
+                            return saved
+                        return {'request':request,'message':answer[:6000],'reasoning':'local_model_code'}
                 except RuntimeError as exc:
                     return {'request':request,'message':f'No pude generar el código con el modelo local: {exc}'}
             return {'request':request,'message':
@@ -289,18 +311,24 @@ class Assistant:
         if conversational:
             return {'request':request,'message':conversational}
         if self._is_troubleshooting_request(request):
+            diagnostics=self._collect_diagnostics()
             if self.llm and self.llm.is_available():
                 try:
                     answer=self.llm.generate_response(
-                        'Ayuda a diagnosticar el problema en español. Da una respuesta práctica y completa: '
-                        'causas probables, comprobaciones concretas en orden, comandos de diagnóstico no destructivos '
-                        'cuando sean pertinentes y qué salida compartir después. No ejecutes comandos, no inventes '
-                        'el estado del equipo y no busques en la web ni incluyas fuentes salvo que se soliciten. '
-                        'Si falta el mensaje de error o contexto, dilo al final con claridad. '
-                        +self._recent_context()+'PROBLEMA: '+request[:900],
-                        max_tokens=160,
+                        'Ayuda a diagnosticar el problema en español con datos reales. Da una respuesta práctica: '
+                        'causas probables ordenadas, comprobaciones concretas y comandos de diagnóstico no destructivos '
+                        'cuando sean pertinentes. No des una explicación académica ni teoría general: centrate en '
+                        'resolver el fallo concreto. No inventes el estado del equipo: usa los DATOS DE DIAGNÓSTICO '
+                        'reales adjuntos; si no bastan, pide el mensaje de error exacto. '
+                        'No busques en la web ni incluyas fuentes salvo que se soliciten. '
+                        'No afirmes que ejecutaste comandos que no aparecen en los datos. '
+                        +self._recent_context()+'DATOS DE DIAGNÓSTICO:\n'+diagnostics+'\nPROBLEMA: '+request[:900],
+                        max_tokens=220,
                     ).strip()
-                    if answer:return {'request':request,'message':answer[:3500],'reasoning':'local_model_troubleshooting'}
+                    if answer:
+                        return {'request':request,'message':answer[:3500]+
+                                '\n\nPuedo ejecutar comandos concretos por ti (por ejemplo «ejecuta ls -la»); dime cuál.',
+                                'reasoning':'local_model_troubleshooting'}
                 except RuntimeError as exc:
                     return {'request':request,'message':
                             f'No pude consultar el modelo local: {exc}. Comparte el error exacto, el comando usado '
@@ -326,8 +354,10 @@ class Assistant:
             if self.llm and self.llm.is_available():
                 try:
                     answer=self.llm.generate_response(
-                        'Responde en español con una explicación completa y clara para principiantes. '
+                        'Responde en español con una explicación clara y práctica. '
                         'Usa ejemplos si ayudan. No hagas búsquedas, no añadas enlaces ni afirmes hechos dudosos. '
+                        'No inventes agentes, módulos ni detalles internos del sistema: si no conoces cómo funciona '
+                        'algo por dentro, dilo en lugar de especular. '
                         +self._recent_context()+'PETICIÓN: '+request[:700],
                         max_tokens=128,
                     ).strip()
@@ -350,6 +380,7 @@ class Assistant:
                     message=self.llm.generate_response(
                         'Responde en español, en menos de 70 palabras. '
                         'Puedes crear texto original. No afirmes que tienes sentimientos. '
+                        'No inventes capacidades ni detalles internos del sistema. '
                         'No ejecutes acciones. '+self._recent_context()+'PETICIÓN: '+request[:700],
                     )
                     if message.strip():return {'request':request,'message':message.strip()[:1500],'reasoning':'local_model'}
@@ -436,7 +467,25 @@ class Assistant:
             answer=event.get('message','').strip()
             if request and answer:
                 turns.append(f'Usuario: {request[:140]}\nCLIBOT: {answer[:180]}')
+        memory=self._memory_summary()
+        if memory:
+            turns.append('MEMORIA DE SESIONES ANTERIORES:\n'+memory)
         return 'CONTEXTO RECIENTE:\n'+'\n'.join(turns)+'\n' if turns else ''
+
+    def _memory_summary(self,limit=8):
+        try:
+            entries=self.memory.get_history(limit)
+        except Exception:
+            return ''
+        lines=[]
+        for entry in entries:
+            request=str(entry.get('request','')).strip()
+            response=str(entry.get('response_summary','')).strip()
+            if request:
+                lines.append(f'- Usuario: {request[:160]}')
+                if response:
+                    lines.append(f'  CLIBOT: {response[:200]}')
+        return '\n'.join(lines)
 
     @staticmethod
     def _is_educational_request(request):
@@ -540,33 +589,83 @@ class Assistant:
         amount=remaining/units[match.group(2)]
         return f'Te quedarían {amount.normalize()} {match.group(2).upper()}.'
 
-    def _interpret_with_model(self,request):
-        import threading
-        import queue
-        
-        def run_with_timeout(func, timeout_seconds):
-            result_queue = queue.Queue()
-            exception_queue = queue.Queue()
-            
-            def worker():
-                try:
-                    result = func()
-                    result_queue.put(result)
-                except Exception as e:
-                    exception_queue.put(e)
-            
-            thread = threading.Thread(target=worker, daemon=True)
-            thread.start()
-            thread.join(timeout=timeout_seconds)
-            
-            if thread.is_alive():
-                return None  # Timeout - fallback to rule-based
-            if not exception_queue.empty():
-                raise exception_queue.get()
-            if not result_queue.empty():
-                return result_queue.get()
+    @staticmethod
+    def _answer_hardware_question(request):
+        normalized=normalize(request)
+        has_ram=bool(re.search(r'\b\d+(?:[.,]\d+)?\s*(?:gb|gib|mb|mib)\s*(?:de\s+)?(?:ram|memoria)\b',normalized))
+        asks_what=bool(re.search(r'\b(?:que puedo|que se puede|que puedo hacer|que se puede hacer|que recomiendas|que me recomiendas|que opciones|para que sirve|sirve para)\b',normalized))
+        is_server=bool(re.search(r'\b(?:servidor|server|vps|nuc|mini pc|equipo|computadora|ordenador|pc|laptop)\b',normalized))
+        if not (has_ram and asks_what) and not (is_server and asks_what and re.search(r'\b(?:ram|memoria|cpu|disco|hardware|recursos)\b',normalized)):
             return None
-        
+        return ('Con ese equipo puedo ayudarte a monitorear recursos (RAM, CPU, disco, procesos), diagnosticar '
+                'problemas del sistema, revisar logs y servicios, gestionar archivos y ejecutar comandos concretos '
+                'por ti. Dime qué quieres hacer: por ejemplo «analiza el directorio /var/log», «qué procesos comen '
+                'más RAM» o «ejecuta df -h». Si el equipo tiene GPU, también puedo consultar nvidia-smi.')
+
+    def _collect_diagnostics(self):
+        plan=Plan([
+            Operation('system','info',{},description='estado general del sistema',risk=Risk.READ_ONLY),
+            Operation('system','ram',{},description='uso de memoria',risk=Risk.READ_ONLY),
+            Operation('system','logs',{'lines':60},description='logs recientes del sistema',risk=Risk.READ_ONLY),
+            Operation('processes','memory_top',{'limit':8},description='procesos que más memoria usan',risk=Risk.READ_ONLY),
+        ],'diagnóstico automático')
+        try:
+            self.validator.validate(plan)
+            results=self.executor.execute(plan)
+        except Exception:
+            return '(no se pudieron recopilar datos de diagnóstico)'
+        chunks=[]
+        for op,result in zip(plan.operations,results):
+            if not result.success:
+                continue
+            value=result.data.get('value') if isinstance(result.data,dict) else None
+            text=value if isinstance(value,str) else str(value)
+            chunks.append(f'== {op.capability}.{op.name} ==\n{text[:3000]}')
+        return '\n\n'.join(chunks)[:9000] or '(sin datos)'
+
+    def _maybe_save_generated_code(self,request,answer):
+        target=self._code_target_path(request)
+        if not target:
+            return None
+        code=self._extract_code_block(answer)
+        if not code:
+            return None
+        from pathlib import Path
+        destination=Path(target).expanduser()
+        if not destination.parent.is_dir():
+            return {'request':request,'message':
+                    f'Generé el código, pero la carpeta de destino no existe: {destination.parent}. '
+                    'Dime dónde guardarlo o crea la carpeta primero.'}
+        plan=Plan([Operation('filesystem','write',{'path':str(destination),'content':code},
+                             description=f'guardar el código generado en {destination}',risk=Risk.MODERATE)],request)
+        try:
+            self.validator.validate(plan)
+            results=self.executor.execute(plan)
+        except Exception as exc:
+            return {'request':request,'message':f'No pude guardar el archivo: {exc}'}
+        self.context.remember(request,results,plan)
+        return {'request':request,'plan':plan,'results':results,
+                'message':f'Guardé el código en {destination}.\n\n'+answer[:4000],'reasoning':'local_model_code'}
+
+    @staticmethod
+    def _code_target_path(request):
+        normalized=normalize(request)
+        match=re.search(r'(?i)\b(?:en|a|dentro de)\s+["\']?((?:~|/|\.{1,2}/)[\w./-]+|[\w.-]+/[\w./-]+)["\']?',normalized)
+        if match:
+            candidate=match.group(1).rstrip('.,;:')
+            if re.search(r'\.(?:py|js|ts|sh|c|cpp|h|html|css|json|yaml|yml|md|txt|rs|go|java|rb|php)$',candidate,re.I):
+                return candidate
+        match=re.search(r'(?i)\b(?:archivo|fichero|file)\s+["\']?([\w.-]+\.(?:py|js|ts|sh|c|cpp|h|html|css|json|yaml|yml|md|txt|rs|go|java|rb|php))["\']?',normalized)
+        if match:
+            return match.group(1)
+        return None
+
+    @staticmethod
+    def _extract_code_block(answer):
+        match=re.search(r'```[\w+-]*\n(.*?)```',answer,re.S)
+        return match.group(1) if match else None
+
+    def _interpret_with_model(self,request):
         catalog=[]
         for capability in self.registry.list():
             catalog.append({
@@ -597,9 +696,7 @@ class Assistant:
             }
         if not self.llm:
             return None
-        choice = run_with_timeout(lambda: self.llm.interpret_request(request,catalog,summary), self.llm_timeout)
-        if choice is None:
-            return None  # Fallback to rule-based parsing
+        choice = self.llm.interpret_request(request,catalog,summary)
         kind=choice['kind']
         if kind=='answer':
             message=choice.get('message')

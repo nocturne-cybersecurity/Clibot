@@ -756,7 +756,7 @@ class Terminal:
         self.console.print(Text('  /voice on activa respuesta de voz; /voice list muestra perfiles disponibles.', style=DIM))
         self.console.print(Text('  /mic list muestra modelos de reconocimiento de voz disponibles.', style=DIM))
         self.console.print(Text('  /micro on activa dictado local en español; di «micro off» o escribe /micro off para detenerlo.', style=DIM))
-        self.console.print(Text('  ⚠ Las acciones importantes piden confirmación.', style=WARN))
+        self.console.print(Text('  Las acciones se ejecutan directamente; solo se pide la contraseña de sudo cuando un comando la necesita.', style=DIM))
 
     def _cmd_caps(self, _a):
         caps = self.assistant.capabilities()

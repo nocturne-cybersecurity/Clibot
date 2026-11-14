@@ -1028,6 +1028,14 @@ def build_scan_folder(s, text, ctx):
     return _plan(text, _op('filesystem', 'list', {'path': path, 'all_entries': True}, desc='escanear carpeta ' + path))
 
 
+def build_analyze_folder(s, text, ctx):
+    path = _path(text) or '.'
+    return _plan(text,
+                 _op('filesystem', 'disk_usage', {'path': path}, desc=f'espacio usado en {path}'),
+                 _op('filesystem', 'list', {'path': path, 'all_entries': True}, desc=f'listar contenido de {path}'),
+                 _op('filesystem', 'find_large', {'path': path}, desc=f'buscar archivos grandes en {path}'))
+
+
 def _with_path(text, message, cap, name, key, extra=None, risk=Risk.READ_ONLY, desc=''):
     path = _path(text)
     if not path:
@@ -1901,6 +1909,10 @@ ORIGINAL_RULES = [
          build_npm_install, [('npm install lodash', 'package_manager.npm_install'), ('instala express con npm', 'package_manager.npm_install')]),
     Rule('scan_folder', _all(_rx(r'\b(escanea|escanear|scan)\b'), _rx(r'\b(carpeta|directorio|folder|directory)\b')), build_scan_folder,
          [('escanea la carpeta /tmp', 'filesystem.list')]),
+    Rule('analyze_folder', _all(_rx(r'\b(analiza|analizar|analisis|revisa|revisar|resume|resumir|informe|informa)\b'),
+                                _rx(r'\b(carpeta|directorio|folder|directory|carpeta)\b')),
+         build_analyze_folder,
+         [('analiza el directorio /var/log', 'filesystem.disk_usage'), ('revisa la carpeta ~/Descargas', 'filesystem.list')]),
     Rule('csv_to_json', _rx(r'\b(csv a json|csv to json)\b'), build_csv_to_json, [('convierte csv a json /tmp/a.csv', 'data_processing.csv_to_json')]),
     Rule('json_to_csv', _rx(r'\b(json a csv|json to csv)\b'), build_json_to_csv, [('convierte json a csv /tmp/a.json', 'data_processing.json_to_csv')]),
     Rule('read_csv', _rx(r'\b(csv|leer csv)\b'), lambda s, t, c: _with_path(t, 'Indica la ruta del archivo CSV', 'data_processing', 'read_csv', 'file_path'),

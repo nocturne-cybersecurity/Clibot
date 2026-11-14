@@ -6,18 +6,20 @@ from core.contracts import Operation, Plan, Risk
 _CREATE=re.compile(r'\b(?:crea|crear|crees|create|make)\b.*\b(?:archivo|fichero|file)\b',re.I)
 def _handler(text,context=None):
     normalized=text
-    match=re.search(r'(?i)\b(?:llamado|llamada|llame|named|name)\s+["\']?([^\s"\']+)',text)
+    match=re.search(r'(?i)\b(?:llamado|llamada|llame|named|name|nombre)\s+["\']?([^\s"\']+)',text)
     if not match:
-        match=re.search(r'(?i)\b(?:archivo|fichero|file)\s+["\']?([\w.-]+\.[\w.-]+)',text)
+        match=re.search(r'(?i)\b(?:archivo|fichero|file)\s+["\']?([~./\w-][\w./-]*\.[\w.-]+)',text)
     if not match:
         if context is not None:
             context.pending={'kind':'create_file_name','directory':_directory(text),'extension':'.txt' if re.search(r'(?i)\b(?:texto|text)\b',text) else ''}
         return Plan([],text,'¿Qué nombre quieres para el archivo? Puedes responder solo con el nombre; por ejemplo, hola.txt.')
     filename=match.group(1).rstrip('.,;')
-    if re.search(r'(?i)\b(?:texto|text)\b',text) and '.' not in filename:filename+='.txt'
-    if filename in {'.','..'} or '/' in filename or '\\' in filename:return Plan([],text,'Indica solo un nombre de archivo, sin rutas.')
-    directory=_directory(text)
-    destination=str(Path(directory).expanduser()/filename)
+    if '/' in filename or '\\' in filename or filename.startswith('~'):
+        destination=str(Path(filename).expanduser())
+    else:
+        if re.search(r'(?i)\b(?:texto|text)\b',text) and '.' not in filename:filename+='.txt'
+        if filename in {'.','..'}:return Plan([],text,'Indica solo un nombre de archivo, sin rutas.')
+        destination=str(Path(_directory(text)).expanduser()/filename)
     operation=Operation('filesystem','create',{'path':destination,'content':''},description=f'crear el archivo vacío {destination}',risk=Risk.MODERATE)
     return Plan([operation],text)
 

@@ -100,7 +100,7 @@ def test_application_request_reaches_launcher_after_confirmation(monkeypatch):
     assert launched == ['pycharm']
 
 
-def test_close_app_request_is_confirmed_and_dispatched(monkeypatch):
+def test_close_app_request_is_dispatched_without_confirmation(monkeypatch):
     from core.assistant import Assistant
 
     prompts=[]
@@ -111,4 +111,4 @@ def test_close_app_request_is_confirmed_and_dispatched(monkeypatch):
     response=assistant.handle('cierra chrome')
     assert response['results'][0].success
     assert closed==['chrome']
-    assert len(prompts)==1 and 'browser.close_application' in prompts[0]
+    assert prompts==[]
