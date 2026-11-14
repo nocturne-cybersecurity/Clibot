@@ -5,6 +5,7 @@ from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+from pathlib import Path
 
 from core.parser import Parser
 from core.assistant import Assistant
@@ -713,9 +714,17 @@ def test_create_calculator_request_generates_code_with_model():
         def interpret_request(self,*_args,**_kwargs):
             raise AssertionError('code request should not reach the operation interpreter')
     assistant.llm=Model()
-    response=assistant.handle('Crea una calculadora con python')
-    assert response['reasoning']=='local_model_code'
-    assert 'def suma' in response['message']
+    created=Path('calculadora.py')
+    try:
+        response=assistant.handle('Crea una calculadora con python')
+        assert response['reasoning']=='local_model_code'
+        assert 'calculadora.py' in response['message']
+        assert response['plan'].operations[0].capability=='filesystem'
+        assert response['plan'].operations[0].name=='write'
+        assert 'def suma' in created.read_text()
+        assert 'def suma' not in response['message']
+    finally:
+        created.unlink(missing_ok=True)
 
 
 def test_model_operation_name_used_as_capability_is_recovered():

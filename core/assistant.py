@@ -758,7 +758,7 @@ class Assistant:
         return '\n\n'.join(chunks)[:9000] or '(sin datos)'
 
     def _maybe_save_generated_code(self,request,answer):
-        target=self._code_target_path(request)
+        target=self._code_target_path(request) or self._infer_code_target(request)
         if not target:
             return None
         code=self._extract_code_block(answer)
@@ -778,8 +778,55 @@ class Assistant:
         except Exception as exc:
             return {'request':request,'message':f'No pude guardar el archivo: {exc}'}
         self.context.remember(request,results,plan)
+        explanation=re.sub(r'```[\w+-]*\n.*?```','',answer,flags=re.S).strip()
+        message=f'Guardé el código en {destination}.'
+        if explanation:
+            message+='\n\n'+explanation[:2000]
         return {'request':request,'plan':plan,'results':results,
-                'message':f'Guardé el código en {destination}.\n\n'+answer[:4000],'reasoning':'local_model_code'}
+                'message':message,'reasoning':'local_model_code'}
+
+    _CODE_LANGUAGE_EXTENSIONS={
+        'python':'py','py':'py','javascript':'js','js':'js','node':'js','nodejs':'js',
+        'typescript':'ts','ts':'ts','bash':'sh','shell':'sh','sh':'sh','zsh':'sh',
+        'c':'c','cpp':'cpp','c++':'cpp','java':'java','go':'go','golang':'go',
+        'rust':'rs','rs':'rs','ruby':'rb','rb':'rb','php':'php','html':'html',
+        'css':'css','sql':'sql','json':'json','yaml':'yaml','yml':'yml',
+    }
+
+    @classmethod
+    def _infer_code_target(cls,request):
+        """Infer a filename like ``calculadora.py`` when the user asks to create
+        code without giving an explicit path, so the result is saved to disk
+        instead of only printed (and read aloud by TTS)."""
+        normalized=normalize(request)
+        creation=re.search(r'\b(?:crea|crear|escribe|escribir|genera|generar|generame|implementa|implementar|programa|programar|desarrolla|desarrollar|codifica|codificar|haz|hacer|quiero|necesito)\b',normalized)
+        artifact=re.search(r'\b(?:calculadora|bot|juego|app|aplicacion|pagina|sitio|web|dashboard|cli|herramienta|programa|script|funcion|api|servicio|automatizacion|scraper|parser)\b',normalized)
+        if not (creation and artifact):
+            return None
+        extension='txt'
+        for language,ext in cls._CODE_LANGUAGE_EXTENSIONS.items():
+            if re.search(r'\b'+re.escape(language)+r'\b',normalized):
+                extension=ext
+                break
+        name=None
+        match=re.search(r'\b(?:una?|el|la|los|las)\s+([a-záéíóúñ0-9]+(?:\s+[a-záéíóúñ0-9]+){0,2})',normalized)
+        if match:
+            candidate=match.group(1)
+            stop={'un','una','el','la','los','las','con','en','para','de','del','que','y','usando','hecho','codigo','script','programa','funcion','app','aplicacion','bot','juego','pagina','sitio','web','dashboard','cli','herramienta','python','javascript','typescript','java','rust','ruby','php','bash','shell','html','css','sql','node','go'}
+            words=[w for w in candidate.split() if w not in stop]
+            if words:
+                name=words[0]
+        if not name:
+            for fallback in ('calculadora','bot','juego','app','aplicacion','pagina','sitio','dashboard','cli','herramienta','programa','script'):
+                if re.search(r'\b'+fallback+r'\b',normalized):
+                    name=fallback
+                    break
+        if not name:
+            name='programa'
+        import unicodedata
+        slug=unicodedata.normalize('NFKD',name).encode('ascii','ignore').decode()
+        slug=re.sub(r'[^a-z0-9_-]+','_',slug.lower()).strip('_') or 'programa'
+        return f'{slug}.{extension}'
 
     @staticmethod
     def _code_target_path(request):
