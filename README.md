@@ -24,7 +24,7 @@ Usa el script de instalación automatizada que configura todo automáticamente:
 ```bash
 # 1. Clonar el repositorio
 git clone https://github.com/nocturne-cybersecurity/Clibot.git
-cd CLIBOT
+cd Clibot
 
 # 2. Ejecutar el script de instalación
 python3 instalacion.py
@@ -59,7 +59,7 @@ Si prefieres configurar todo manualmente:
 
 ```bash
 git clone https://github.com/nocturne-cybersecurity/Clibot.git
-cd CLIBOT
+cd Clibot
 ```
 
 #### Paso 2: Crear el Entorno Virtual e Instalar Dependencias
